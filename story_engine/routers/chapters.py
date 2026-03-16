@@ -8,6 +8,7 @@ from story_engine.session import session_store
 from story_engine.agent.client import gemini_client
 from story_engine.agent.prompts import SYSTEM_PROMPT, build_continuation_messages
 from story_engine.agent.parser import parse_chapter
+from story_engine.agent.image_generator import generate_chapter_image
 from story_engine.config import settings
 
 router = APIRouter()
@@ -59,6 +60,10 @@ async def next_chapter(session_id: str, request: ChoiceRequest):
 
             new_chapter_number = session.chapter_count + 1
             chapter = parse_chapter(full_text, chapter_number=new_chapter_number)
+
+            image_result = generate_chapter_image(chapter.scene, chapter.reveal, session.source_story)
+            if image_result:
+                chapter.image_base64, chapter.image_mime_type = image_result
 
             session.history = messages + [{"role": "model", "content": full_text}]
             session.chapter_count = new_chapter_number

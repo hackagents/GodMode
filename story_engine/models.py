@@ -51,6 +51,8 @@ class ChapterResponse(BaseModel):
     threads: Optional[list[ResolvedThread]] = None
     epitaph: Optional[str] = None
     is_ending: bool = False
+    image_base64: Optional[str] = None
+    image_mime_type: Optional[str] = None
 
 
 class SessionState(BaseModel):
