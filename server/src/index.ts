@@ -1,5 +1,6 @@
 import express from 'express';
 import cors from 'cors';
+import { queryVertexAgent } from './vertexClient'; // Import the Vertex ADK client
 
 const app = express();
 const port = process.env.PORT || 3001;
@@ -9,6 +10,26 @@ app.use(express.json());
 
 app.get('/api/hello', (req, res) => {
   res.json({ message: 'Story Engine BFF Server is running!' });
+});
+
+// --- Example: Calling Vertex AI ADK Agent ---
+app.post('/api/agent', async (req, res) => {
+  try {
+    const { input } = req.body;
+    
+    if (!input) {
+      return res.status(400).json({ error: "Missing 'input' field in request body." });
+    }
+
+    // Call the Vertex AI Reasoning Engine
+    const agentResponse = await queryVertexAgent(input);
+    
+    // Return the agent's output back to the client
+    res.json({ response: agentResponse });
+  } catch (error: any) {
+    console.error("Agent Route Error:", error.message);
+    res.status(500).json({ error: "Failed to communicate with Vertex AI Agent." });
+  }
 });
 
 // --- 1. Story Bootstrap ---
