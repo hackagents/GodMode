@@ -1,0 +1,82 @@
+data: [SESSION_ID] 9c2065f6-586f-4def-a40c-31487a1f19f0
+
+data: ─── SCENE
+
+data:  ───
+
+The ash in the hearth of Tremaine Manor never truly cools. For Ella, it is a second
+
+data:  skin, a grey shroud that marks her as a ghost in her own home. While her stepsisters, Anastasia and Drizella,
+
+data:  tighten their corsets until their breath comes in shallow gasps, Ella kneels in the soot, scouring the silver that
+
+data:  will never be hers. The manor is a skeleton of its former glory, its tapestries moth-eaten and its wine
+
+data:  cellars dry, held together only by the iron will of Lady Tremaine and the debt she owes to the Crown.
+
+A
+
+data:  heavy iron knock shudders through the oak front door. The Royal Herald doesn't bring a mere invitation; he brings a command
+
+data: . The "Reclamation Ball" is to be held in three days’ time. The King’s health is failing
+
+data: , and the Prince—a man rumored to be as cold as the marble halls he inhabits—must find a match
+
+data:  to stabilize a kingdom on the brink of civil unrest. This is not a fairy tale; it is a political auction, and the
+
+data:  daughters of the nobility are the currency.
+
+Lady Tremaine’s eyes, sharp as flint, settle on Ella as
+
+data:  the scroll is unrolled. She doesn't see a daughter or even a servant; she sees a complication. The invitation explicitly
+
+data:  demands the presence of "all daughters of the blood" of the Great Houses. Ella is the only one who truly carries the Trem
+
+data: aine lineage, her father’s blood running through her veins, while her stepsisters are merely shadows brought in after the
+
+data:  fact. If Ella attends, she is the rightful heir to the estate—and the greatest threat to her stepmother’s survival
+
+data: .
+
+[REVEAL: The invitation is stamped with a black seal, signifying that this ball is also a trial of
+
+data:  lineage where the "unworthy" may not return.]
+
+─── STAKES ───
+THREAT — Lady Tremaine may
+
+data:  resort to permanent measures to ensure Ella cannot claim her inheritance.
+OPPORTUNITY — The palace holds the archives that could prove
+
+data:  how Ella’s father truly died.
+UNKNOWN — The Prince’s "coldness" is whispered to be a cover
+
+data:  for a brewing coup within the castle walls.
+
+─── CHOICES ───
+A. **Demand your birth
+
+data: right.** Confront Lady Tremaine openly and insist on attending as the head of the house.
+B. **Work from the shadows
+
+data: .** Agree to stay behind, but secretively plot to infiltrate the ball as a masked "nobody."
+C. **Seek the
+
+data:  Forbidden.** Venture into the Whispering Woods to find the "Old Woman"—a disgraced alchemist who owed your father a
+
+data:  life-debt.
+D. **Burn the lineage.** Destroy the documents proving your noble blood to escape the lethal politics
+
+data:  of the court forever.
+
+─── RESOLUTION ───
+This is the beginning.
+RESOLVED — The
+
+data:  Call to Court: The royal invitation has arrived, setting the gears of fate in motion.
+OPEN — The Inheritance: Lady
+
+data:  Tremaine’s hold on the manor is fragile, and Ella’s very existence threatens it.
+
+data: [CHAPTER_JSON] {"chapter_number":1,"scene":"The ash in the hearth of Tremaine Manor never truly cools. For Ella, it is a second skin, a grey shroud that marks her as a ghost in her own home. While her stepsisters, Anastasia and Drizella, tighten their corsets until their breath comes in shallow gasps, Ella kneels in the soot, scouring the silver that will never be hers. The manor is a skeleton of its former glory, its tapestries moth-eaten and its wine cellars dry, held together only by the iron will of Lady Tremaine and the debt she owes to the Crown.\n\nA heavy iron knock shudders through the oak front door. The Royal Herald doesn't bring a mere invitation; he brings a command. The \"Reclamation Ball\" is to be held in three days’ time. The King’s health is failing, and the Prince—a man rumored to be as cold as the marble halls he inhabits—must find a match to stabilize a kingdom on the brink of civil unrest. This is not a fairy tale; it is a political auction, and the daughters of the nobility are the currency.\n\nLady Tremaine’s eyes, sharp as flint, settle on Ella as the scroll is unrolled. She doesn't see a daughter or even a servant; she sees a complication. The invitation explicitly demands the presence of \"all daughters of the blood\" of the Great Houses. Ella is the only one who truly carries the Tremaine lineage, her father’s blood running through her veins, while her stepsisters are merely shadows brought in after the fact. If Ella attends, she is the rightful heir to the estate—and the greatest threat to her stepmother’s survival.","reveal":"The invitation is stamped with a black seal, signifying that this ball is also a trial of lineage where the \"unworthy\" may not return.","stakes":[{"label":"THREAT","text":"Lady Tremaine may resort to permanent measures to ensure Ella cannot claim her inheritance."},{"label":"OPPORTUNITY","text":"The palace holds the archives that could prove how Ella’s father truly died."},{"label":"UNKNOWN","text":"The Prince’s \"coldness\" is whispered to be a cover for a brewing coup within the castle walls."}],"choices":[{"key":"A","text":"**Demand your birthright.** Confront Lady Tremaine openly and insist on attending as the head of the house."},{"key":"B","text":"**Work from the shadows.** Agree to stay behind, but secretively plot to infiltrate the ball as a masked \"nobody.\""},{"key":"C","text":"**Seek the Forbidden.** Venture into the Whispering Woods to find the \"Old Woman\"—a disgraced alchemist who owed your father a life-debt."},{"key":"D","text":"**Burn the lineage.** Destroy the documents proving your noble blood to escape the lethal politics of the court forever."}],"resolution":"This is the beginning.","threads":[{"status":"RESOLVED","thread":"The Call to Court","detail":"The royal invitation has arrived, setting the gears of fate in motion."},{"status":"OPEN","thread":"The Inheritance","detail":"Lady Tremaine’s hold on the manor is fragile, and Ella’s very existence threatens it."}],"epitaph":null,"is_ending":false}
+
