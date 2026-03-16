@@ -47,8 +47,19 @@
   box-shadow: 0 4px 6px rgba(0,0,0,0.3);
 }
 
+.panel-image {
+  width: 100%;
+  height: auto;
+  display: block;
+  /* Maintain a roughly 16:9 aspect ratio visually if the image is slightly off */
+  aspect-ratio: 16 / 9; 
+  object-fit: cover;
+  border-bottom: 1px solid #333;
+}
+
 .scene-placeholder {
-  height: 200px;
+  width: 100%;
+  aspect-ratio: 16 / 9;
   background: #2a2a2a;
   display: flex;
   align-items: center;
@@ -57,6 +68,21 @@
   font-family: monospace;
   font-weight: bold;
   letter-spacing: 0.1em;
+  position: relative;
+  border-bottom: 1px solid #333;
+}
+
+/* Because of padding hack, we need inner text to be absolute to center it */
+.scene-placeholder::before {
+    content: attr(data-label);
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+}
+
+.loading-image {
+  animation: pulse 1.5s infinite;
 }
 
 /* Mock scene colours */
@@ -72,7 +98,6 @@
   padding: 1.5rem;
   font-size: 1.1rem;
   line-height: 1.6;
-  border-top: 1px solid #333;
 }
 
 .absorbed-banner {
@@ -259,4 +284,140 @@
   margin: 1rem 0;
   border: 1px solid #5a2c2c;
   text-align: center;
+}
+.catalog-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
+  gap: 1.5rem;
+  margin-bottom: 3rem;
+}
+
+.catalog-card {
+  background: #1a1a1a;
+  border: 1px solid #333;
+  padding: 1.5rem;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.catalog-card:hover {
+  background: #222;
+  border-color: #555;
+  transform: translateY(-4px);
+}
+
+.catalog-card h3 {
+  margin: 0 0 0.5rem 0;
+  color: #fff;
+}
+
+.catalog-card p {
+  font-size: 0.9rem;
+  color: #aaa;
+  line-height: 1.4;
+}
+
+.custom-story {
+  background: #222;
+  padding: 2rem;
+  border-radius: 12px;
+  border: 1px solid #444;
+}
+
+.input-group {
+  display: flex;
+  gap: 1rem;
+  margin-top: 1rem;
+}
+
+.input-group input {
+  flex: 1;
+  background: #1a1a1a;
+  border: 1px solid #444;
+  padding: 0.8rem 1rem;
+  border-radius: 6px;
+  color: #fff;
+}
+
+.input-group button {
+  background: #fff;
+  color: #000;
+  border: none;
+  padding: 0 1.5rem;
+  border-radius: 6px;
+  font-weight: bold;
+  cursor: pointer;
+}
+
+.prose {
+  font-size: 1.1rem;
+  line-height: 1.7;
+  color: #ccc;
+  white-space: pre-wrap;
+  margin-bottom: 1.5rem;
+}
+
+.reveal {
+  background: #2a1a1a;
+  color: #ff8b8b;
+  padding: 1rem;
+  border-left: 4px solid #ff4444;
+  font-style: italic;
+  margin-bottom: 1.5rem;
+}
+
+.stakes {
+  background: #1a1a2a;
+  padding: 1rem;
+  border-radius: 6px;
+  margin-bottom: 1.5rem;
+}
+
+.stakes ul {
+  list-style: none;
+  padding: 0;
+  margin: 0.5rem 0 0 0;
+}
+
+.stakes li {
+  margin-bottom: 0.5rem;
+}
+
+.label-threat { color: #ff6b6b; font-weight: bold; }
+.label-opportunity { color: #51cf66; font-weight: bold; }
+.label-unknown { color: #845ef7; font-weight: bold; }
+
+.resolution {
+  font-size: 0.95rem;
+  color: #888;
+  margin-bottom: 1rem;
+  font-style: italic;
+}
+
+.epitaph {
+  text-align: center;
+  font-size: 1.3rem;
+  font-style: italic;
+  color: #fff;
+  padding: 2rem 0;
+  border-top: 1px dashed #444;
+}
+
+.panel.streaming {
+  opacity: 0.8;
+}
+
+.cursor {
+  display: inline-block;
+  width: 8px;
+  height: 1.1rem;
+  background: #fff;
+  margin-left: 4px;
+  animation: blink 1s infinite;
+  vertical-align: middle;
+}
+
+@keyframes blink {
+  50% { opacity: 0; }
 }

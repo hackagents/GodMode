@@ -1,298 +1,324 @@
 import { useState, useEffect, useRef } from 'react'
 import './App.css'
 
-// -- Types matching the backend/prompts --
-interface Panel {
-  caption: string;
-  scene: string;
+// -- Types matching the Python backend --
+interface Stake {
+  label: 'THREAT' | 'OPPORTUNITY' | 'UNKNOWN';
+  text: string;
 }
 
 interface Choice {
+  key: 'A' | 'B' | 'C' | 'D';
   text: string;
+}
+
+interface ResolvedThread {
+  status: 'RESOLVED' | 'OPEN';
+  thread: string;
+  detail: string;
+}
+
+interface ChapterResponse {
+  chapter_number: int;
+  scene?: string;
+  reveal?: string;
+  stakes?: Stake[];
+  choices?: Choice[];
+  resolution?: string;
+  threads?: ResolvedThread[];
+  epitaph?: string;
+  is_ending: boolean;
+}
+
+interface CatalogStory {
+  id: number;
+  title: string;
   genre: string;
-  hint: string;
+  description: string;
 }
 
-interface Checkpoint {
-  moment: string;
-  choices: Choice[];
-}
+// Reuse the StoryPanel but adapt it for prose
+function StoryPanel({ chapter, genre }: { chapter: ChapterResponse, genre: string }) {
+  const [imageSrc, setImageSrc] = useState<string | null>(null);
+  const [loadingImg, setLoadingImg] = useState<boolean>(true);
+  const [errorImg, setErrorImg] = useState<boolean>(false);
 
-interface Ending {
-  final_panel: Panel;
-  rest: string;
-}
+  useEffect(() => {
+    if (!chapter.scene) {
+        setLoadingImg(false);
+        return;
+    }
 
-interface SessionState {
-  STORY_TITLE: string;
-  DIVERGENCE: string;
-  GENRE: string;
-  MAX_PANELS: number;
-  PANELS_USED: number;
-  PANELS_REMAINING: number;
-  STORY_SO_FAR: string;
-  LAST_PANEL_CAPTION: string;
-  ENDING_TRIGGERED: boolean;
-  ENDING_TRIGGER_REASON: string;
+    const fetchImage = async () => {
+      try {
+        // Compose a prompt using the scene, but summarize it for better results
+        const promptSummary = chapter.reveal || chapter.scene?.split('.')[0] || "A mysterious scene";
+        const imagePrompt = `A comic book panel illustration. Genre: ${genre}. Action: ${promptSummary}. High quality, detailed, graphic novel style.`;
+        
+        // Note: This endpoint will be added to the python backend
+        const res = await fetch('/api/story/generate-image', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ prompt: imagePrompt })
+        });
+        
+        if (!res.ok) throw new Error("Image generation failed");
+        
+        const data = await res.json();
+        if (data.imageBase64) {
+          setImageSrc(`data:image/png;base64,${data.imageBase64}`);
+        } else {
+          setErrorImg(true);
+        }
+      } catch (err) {
+        console.error("Error fetching image for chapter:", err);
+        setErrorImg(true);
+      } finally {
+        setLoadingImg(false);
+      }
+    };
+
+    fetchImage();
+  }, [chapter.scene, chapter.reveal, genre]);
+
+  return (
+    <div className="panel">
+      {chapter.scene && (
+        <>
+          {loadingImg ? (
+            <div className="scene-placeholder loading-image">
+              <div className="loading-content">
+                <div className="spinner"></div>
+                <span>Drawing scene...</span>
+              </div>
+            </div>
+          ) : errorImg || !imageSrc ? (
+            <div className="scene-placeholder">
+                <div className="loading-content">
+                  <span>No Image</span>
+                </div>
+            </div>
+          ) : (
+            <img src={imageSrc} alt={chapter.scene.substring(0, 50)} className="panel-image" />
+          )}
+          <div className="caption">
+            {chapter.resolution && <div className="resolution"><strong>Resolution:</strong> {chapter.resolution}</div>}
+            <div className="prose">{chapter.scene}</div>
+            {chapter.reveal && <div className="reveal"><strong>REVEAL:</strong> {chapter.reveal}</div>}
+            
+            {chapter.stakes && chapter.stakes.length > 0 && (
+              <div className="stakes">
+                <strong>STAKES:</strong>
+                <ul>
+                  {chapter.stakes.map((s, i) => (
+                    <li key={i}><span className={`label-${s.label.toLowerCase()}`}>{s.label}</span> — {s.text}</li>
+                  ))}
+                </ul>
+              </div>
+            )}
+
+            {chapter.epitaph && <div className="epitaph">{chapter.epitaph}</div>}
+          </div>
+        </>
+      )}
+    </div>
+  );
 }
 
 function App() {
-  const [session, setSession] = useState<SessionState>({
-    STORY_TITLE: "The Midnight Heist",
-    DIVERGENCE: "They forgot the blueprint.",
-    GENRE: "Dark",
-    MAX_PANELS: 10,
-    PANELS_USED: 0,
-    PANELS_REMAINING: 10,
-    STORY_SO_FAR: "",
-    LAST_PANEL_CAPTION: "",
-    ENDING_TRIGGERED: false,
-    ENDING_TRIGGER_REASON: ""
-  });
-
-  const [panels, setPanels] = useState<Panel[]>([]);
-  const [checkpoint, setCheckpoint] = useState<Checkpoint | null>(null);
-  const [ending, setEnding] = useState<Ending | null>(null);
-  const [userInput, setUserInput] = useState("");
+  const [catalog, setCatalog] = useState<CatalogStory[]>([]);
+  const [selectedStory, setSelectedStory] = useState<CatalogStory | null>(null);
+  const [customStory, setCustomStory] = useState("");
+  
+  const [sessionId, setSessionId] = useState<string | null>(null);
+  const [chapters, setChapters] = useState<ChapterResponse[]>([]);
+  const [currentProse, setCurrentProse] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
-  const [absorbedMessage, setAbsorbedMessage] = useState("");
+  const [isStarted, setIsStarted] = useState(false);
+  const [userInput, setUserInput] = useState("");
 
   const bottomRef = useRef<HTMLDivElement>(null);
 
-  // Start the story on mount
+  // Load catalog on mount
   useEffect(() => {
-    bootstrapStory();
+    fetch('/api/catalog')
+      .then(res => res.json())
+      .then(setCatalog)
+      .catch(err => {
+        console.error("Failed to load catalog:", err);
+        setError("Failed to load story catalog.");
+      });
   }, []);
 
-  // Scroll to bottom when panels change
+  // Scroll to bottom
   useEffect(() => {
-    if (panels.length > 0) {
-      setTimeout(() => {
-        bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
-      }, 100);
-    }
-  }, [panels, ending]);
+    bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [chapters, currentProse]);
 
-  const bootstrapStory = async () => {
-    setLoading(true);
-    try {
-      const res = await fetch('/api/story/bootstrap', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ 
-          storyTitle: session.STORY_TITLE, 
-          divergence: session.DIVERGENCE, 
-          genre: session.GENRE 
-        })
-      });
-      const data = await res.json();
-      
-      setPanels(data.panels);
-      setCheckpoint(data.checkpoint);
-      
-      const newPanelsUsed = data.panels.length;
-      updateSessionAfterPanels(newPanelsUsed, data.panels[data.panels.length - 1].caption);
-      
-    } catch (err) {
-      console.error(err);
-      setError("Failed to start story.");
-    } finally {
-      setLoading(false);
-    }
-  };
+  const consumeStream = async (response: Response) => {
+    const reader = response.body?.getReader();
+    if (!reader) return;
 
-  const updateSessionAfterPanels = (panelsAdded: number, lastCaption: string) => {
-    setSession(prev => {
-      const newUsed = prev.PANELS_USED + panelsAdded;
-      return {
-        ...prev,
-        PANELS_USED: newUsed,
-        PANELS_REMAINING: prev.MAX_PANELS - newUsed,
-        LAST_PANEL_CAPTION: lastCaption
+    const decoder = new TextDecoder();
+    let partial = "";
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      const chunk = decoder.decode(value, { stream: true });
+      const lines = (partial + chunk).split('\n\n');
+      partial = lines.pop() || "";
+
+      for (const line of lines) {
+        if (line.startsWith('data: ')) {
+          const content = line.slice(6).trim();
+          
+          if (content.startsWith('[SESSION_ID]')) {
+            setSessionId(content.slice(12).trim());
+          } else if (content.startsWith('[CHAPTER_JSON]')) {
+            const chapterJson = JSON.parse(content.slice(14).trim());
+            setChapters(prev => [...prev, chapterJson]);
+            setCurrentProse("");
+          } else if (content.startsWith('[ERROR]')) {
+            setError(content.slice(7).trim());
+          } else {
+            // It's a prose chunk
+            setCurrentProse(prev => prev + content);
+          }
+        }
       }
-    });
-    // Note: In a real app, you'd also call /api/story/summary here
-  };
-
-  const handleChoice = async (choice: Choice) => {
-    setLoading(true);
-    setAbsorbedMessage("");
-    try {
-      const res = await fetch('/api/story/continue', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          storySoFar: session.STORY_SO_FAR,
-          choiceText: choice.text,
-          choiceGenre: choice.genre,
-          panelsRemaining: session.PANELS_REMAINING
-        })
-      });
-      const data = await res.json();
-      
-      setPanels(prev => [...prev, ...data.panels]);
-      setCheckpoint(data.checkpoint);
-      updateSessionAfterPanels(data.panels.length, data.panels[data.panels.length - 1].caption);
-
-      if (session.PANELS_REMAINING - data.panels.length <= 0) {
-          triggerEnding("panel_limit");
-      }
-      
-    } catch (err) {
-      console.error(err);
-      setError("Failed to continue story.");
-    } finally {
-      setLoading(false);
     }
   };
 
-  const handleUserNarration = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!userInput.trim()) return;
-
+  const startStory = async (source_story?: string, catalog_id?: number) => {
     setLoading(true);
     setError("");
-    setAbsorbedMessage("");
-
+    setIsStarted(true);
+    setChapters([]);
+    setCurrentProse("");
+    
     try {
-      // 1. Validate
-      const valRes = await fetch('/api/story/validate', {
+      const res = await fetch('/api/stories', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ userInput, storyContext: session.LAST_PANEL_CAPTION })
+        body: JSON.stringify({ source_story, catalog_id })
       });
-      const valData = await valRes.json();
 
-      if (!valData.usable) {
-        setError(valData.reason || "That direction doesn't fit this story. Try something else.");
-        setLoading(false);
-        return;
-      }
-
-      // 2. Inject
-      const res = await fetch('/api/story/narration', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          storySoFar: session.STORY_SO_FAR,
-          userInput: valData.sanitised,
-          panelsRemaining: session.PANELS_REMAINING
-        })
-      });
-      const data = await res.json();
-
-      setPanels(prev => [...prev, ...data.panels]);
-      setCheckpoint(data.checkpoint);
-      setAbsorbedMessage(data.absorbed);
-      setUserInput("");
+      if (!res.ok) throw new Error("Failed to start story");
       
-      updateSessionAfterPanels(data.panels.length, data.panels[data.panels.length - 1].caption);
-
-      if (session.PANELS_REMAINING - data.panels.length <= 0) {
-        triggerEnding("panel_limit");
-      }
-
-    } catch (err) {
-      console.error(err);
-      setError("Failed to process your idea.");
+      await consumeStream(res);
+    } catch (err: any) {
+      setError(err.message || "Failed to start story.");
+      setIsStarted(false);
     } finally {
       setLoading(false);
     }
   };
 
-  const triggerEnding = async (reason: string, customEndingText?: string) => {
+  const handleChoice = async (input: string) => {
+    if (!sessionId) return;
     setLoading(true);
-    setCheckpoint(null);
+    setError("");
+    setCurrentProse("");
+    setUserInput("");
+    
     try {
-      const res = await fetch('/api/story/ending', {
+      const res = await fetch(`/api/stories/${sessionId}/chapters`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          triggerType: reason,
-          storySoFar: session.STORY_SO_FAR,
-          lastPanelCaption: session.LAST_PANEL_CAPTION,
-          genre: session.GENRE,
-          userEndingInput: customEndingText
-        })
+        body: JSON.stringify({ input })
       });
-      const data = await res.json();
-      setEnding(data);
-      setSession(prev => ({
-        ...prev,
-        ENDING_TRIGGERED: true,
-        ENDING_TRIGGER_REASON: reason
-      }));
-    } catch (err) {
-      console.error(err);
-      setError("Failed to generate ending.");
+
+      if (!res.ok) throw new Error("Failed to continue story");
+      
+      await consumeStream(res);
+    } catch (err: any) {
+      setError(err.message || "Failed to continue story.");
     } finally {
       setLoading(false);
     }
   };
 
-  const handleCustomEnding = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!userInput.trim()) return;
-    triggerEnding("user_ending", userInput);
-    setUserInput("");
-  };
+  if (!isStarted) {
+    return (
+      <main className="app-container">
+        <header className="header">
+          <h1>Story Engine</h1>
+          <p>Choose a classic story or enter your own to begin an interactive adventure.</p>
+        </header>
 
+        <div className="catalog-grid">
+          {catalog.map(story => (
+            <div key={story.id} className="catalog-card" onClick={() => startStory(undefined, story.id)}>
+              <h3>{story.title}</h3>
+              <span className="genre-tag">{story.genre}</span>
+              <p>{story.description}</p>
+            </div>
+          ))}
+        </div>
+
+        <div className="custom-story">
+          <h3>Or start a custom story:</h3>
+          <div className="input-group">
+            <input 
+              type="text" 
+              placeholder="e.g. A space marine stranded on a jungle planet" 
+              value={customStory}
+              onChange={(e) => setCustomStory(e.target.value)}
+            />
+            <button onClick={() => startStory(customStory)} disabled={!customStory.trim() || loading}>
+              Start Adventure
+            </button>
+          </div>
+        </div>
+        {error && <div className="error-banner">{error}</div>}
+      </main>
+    );
+  }
+
+  const lastChapter = chapters[chapters.length - 1];
 
   return (
     <main className="app-container">
       <header className="header">
-        <h1>{session.STORY_TITLE}</h1>
+        <h1>{selectedStory?.title || "Custom Story"}</h1>
         <div className="status-bar">
-          <span className="genre-tag">{session.GENRE}</span>
-          <span className="panel-counter">Panels: {session.PANELS_USED} / {session.MAX_PANELS}</span>
+          <span className="genre-tag">{selectedStory?.genre || "Action"}</span>
+          <span className="session-id">Session: {sessionId?.slice(0,8)}</span>
         </div>
       </header>
 
       <div className="comic-strip">
-        {panels.map((panel, idx) => (
-          <div key={idx} className="panel">
-            <div className={`scene-placeholder scene-${panel.scene}`}>
-               [{panel.scene.toUpperCase()}]
-            </div>
-            <div className="caption">{panel.caption}</div>
-          </div>
+        {chapters.map((chapter, idx) => (
+          <StoryPanel key={idx} chapter={chapter} genre={selectedStory?.genre || "Action"} />
         ))}
         
-        {absorbedMessage && (
-           <div className="absorbed-banner">{absorbedMessage}</div>
-        )}
-
-        {ending && (
-          <div className="ending-section">
-             <div className="panel final-panel">
-               <div className={`scene-placeholder scene-${ending.final_panel.scene}`}>
-                 [{ending.final_panel.scene.toUpperCase()}]
-               </div>
-               <div className="caption">{ending.final_panel.caption}</div>
-             </div>
-             <p className="rest-line">{ending.rest}</p>
+        {currentProse && (
+          <div className="panel streaming">
+            <div className="caption">
+              <div className="prose">{currentProse}</div>
+              <div className="cursor"></div>
+            </div>
           </div>
         )}
+        
         <div ref={bottomRef} />
       </div>
 
-      {loading && <div className="loading">Drawing next panels...</div>}
+      {loading && !currentProse && <div className="loading">Consulting the Oracle...</div>}
       {error && <div className="error-banner">{error}</div>}
 
-      {!session.ENDING_TRIGGERED && !loading && (
+      {!loading && lastChapter && !lastChapter.is_ending && (
         <div className="interaction-area">
-          {checkpoint && (
+          {lastChapter.choices && (
             <div className="checkpoint">
-              <h3>{checkpoint.moment}</h3>
+              <h3>What will you do?</h3>
               <div className="choices">
-                {checkpoint.choices.map((choice, idx) => (
-                  <button key={idx} className="choice-btn" onClick={() => handleChoice(choice)}>
-                    <span className="choice-text">{choice.text}</span>
-                    <span className="choice-meta">
-                      <span className="choice-genre">{choice.genre}</span>
-                      <span className="choice-hint">{choice.hint}</span>
-                    </span>
+                {lastChapter.choices.map((choice) => (
+                  <button key={choice.key} className="choice-btn" onClick={() => handleChoice(choice.key)}>
+                    <span className="choice-text">{choice.key}. {choice.text}</span>
                   </button>
                 ))}
               </div>
@@ -300,30 +326,33 @@ function App() {
           )}
 
           <div className="user-narration">
-             <h3>Or write your own {checkpoint ? "direction" : "ending"}:</h3>
-             <form onSubmit={checkpoint ? handleUserNarration : handleCustomEnding}>
+             <h3>Or write your own action:</h3>
+             <form onSubmit={(e) => { e.preventDefault(); handleChoice(userInput); }}>
                <input 
                  type="text" 
                  value={userInput}
                  onChange={(e) => setUserInput(e.target.value)}
-                 placeholder={checkpoint ? "What happens next?" : "How does it end?"}
+                 placeholder="Type your action..."
                  disabled={loading}
                />
                <button type="submit" disabled={loading || !userInput.trim()}>
-                 {checkpoint ? "Weave Idea" : "End Story"}
+                 Execute
                </button>
              </form>
           </div>
+        </div>
+      )}
 
-          <div className="ending-controls">
-            <button className="end-story-btn" onClick={() => triggerEnding("user_choice")}>
-              End story here
-            </button>
-          </div>
+      {lastChapter?.is_ending && (
+        <div className="interaction-area">
+          <h2 style={{ textAlign: 'center' }}>The End</h2>
+          <button className="choice-btn" style={{ width: '100%' }} onClick={() => setIsStarted(false)}>
+            Start a New Story
+          </button>
         </div>
       )}
     </main>
-  )
+  );
 }
 
 export default App
