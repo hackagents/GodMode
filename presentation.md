@@ -1,7 +1,6 @@
 # GodMode: Hackathon Project Evaluation
 
 **Project:** GodMode - Interactive Generative Storyteller
-**Timeframe:** 24 Hours
 
 Here is a breakdown of our project based on the hackathon judging criteria.
 
