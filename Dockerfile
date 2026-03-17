@@ -1,11 +1,10 @@
 # ---- Stage 1: Build React frontend ----
-# To build the frontend inside Docker (e.g. in CI with npm access), uncomment:
-# FROM node:20-slim AS frontend
-# WORKDIR /app/frontend
-# COPY frontend/package.json frontend/package-lock.json ./
-# RUN npm ci
-# COPY frontend/ ./
-# RUN npm run build
+FROM node:20-slim AS frontend
+WORKDIR /app/frontend
+COPY frontend/package.json frontend/package-lock.json ./
+RUN npm ci
+COPY frontend/ ./
+RUN npm run build
 
 # ---- Python runtime ----
 FROM python:3.11-slim
@@ -26,10 +25,8 @@ RUN uv sync --frozen --no-dev
 # Copy backend source
 COPY story_engine/ story_engine/
 
-# Copy pre-built frontend (run: cd frontend && npm install && npm run build)
-# If using the multi-stage build above, replace this with:
-# COPY --from=frontend /app/frontend/dist frontend/dist
-COPY frontend/dist frontend/dist
+# Copy frontend build output from stage 1
+COPY --from=frontend /app/frontend/dist frontend/dist
 
 # Cloud Run uses PORT env var (default 8080)
 ENV PORT=8080
