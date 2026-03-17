@@ -6,20 +6,26 @@ Story Engine is an interactive narrative API that transforms classic source stor
 
 ## Setup
 
-### 1. Install dependencies
+### 1. Install uv
 
-Requires Python 3.11+. Uses [uv](https://github.com/astral-sh/uv) for dependency management.
+```bash
+curl -LsSf https://astral.sh/uv/install.sh | sh
+```
+
+### 2. Install dependencies and activate the virtual environment
 
 ```bash
 uv sync
+source .venv/bin/activate
 ```
 
-### 2. Configure environment
+### 3. Configure environment
 
 Create a `.env` file in the repo root:
 
 ```env
 GEMINI_API_KEY=your_api_key_here
+DATABASE_URL=postgresql://user:password@host/dbname?sslmode=require
 ```
 
 Optional overrides (defaults shown):
