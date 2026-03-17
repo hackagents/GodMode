@@ -1,0 +1,14 @@
+.venv/
+node_modules/
+frontend/src/
+frontend/node_modules/
+frontend/node_modules/
+.env
+__pycache__/
+*.pyc
+.git/
+.gitignore
+catalog.db
+tests/
+*.md
+.claude/
