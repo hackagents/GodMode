@@ -1,7 +1,8 @@
 # 1. What is the project about?
 Ever wished you could rewrite your favorite stories?
 Have you always wondered what would have happened if Cinderella never lost her glass slipper? What if Romeo actually checked Juliet's pulse? What if Simba stood up to Scar as a cub?
-GodMode lets you take any story — classics, fairy tales, epics — and change the plot at any moment. The AI picks up right where you diverge and unfolds an entirely new narrative, keeping the characters, tone, and world intact.
+
+GodMode turns any story into a living, breathing RPG you control with just your voice — where every choice shapes a cinematic world that unfolds around you in real time. Unlike static games or chatbots, there's zero waiting, zero reading walls of text — just pure, immersive narrative that reacts to you instantly.
 
 You're not just reading. You're directing.
 GodMode — Every story. Your rules.
