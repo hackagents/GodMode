@@ -24,13 +24,16 @@ source .venv/bin/activate
 Create a `.env` file in the repo root:
 
 ```env
-GEMINI_API_KEY=your_api_key_here
+GCP_PROJECT=your-gcp-project-id
 DATABASE_URL=postgresql://user:password@host/dbname?sslmode=require
 ```
+
+Authentication uses Application Default Credentials. Run `gcloud auth application-default login` locally, or attach a service account in production.
 
 Optional overrides (defaults shown):
 
 ```env
+GCP_LOCATION=global
 MODEL_NAME=gemini-2.0-flash
 MAX_CHAPTERS=10
 ```
