@@ -1,6 +1,9 @@
+from __future__ import annotations
+
 import sqlite3
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Optional
+
 from story_engine.config import settings
 
 _SEED_STORIES = [
@@ -26,6 +29,9 @@ class CatalogStory:
     genre: str
     description: str
     source_story: str
+    image_base64: Optional[str] = field(default=None)
+    image_mime_type: Optional[str] = field(default=None)
+    image_generated_style: Optional[str] = field(default=None)
 
 
 class CatalogStore:
@@ -41,33 +47,96 @@ class CatalogStore:
         with self._connect() as conn:
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS catalog (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    title TEXT NOT NULL,
-                    genre TEXT NOT NULL,
-                    description TEXT NOT NULL,
-                    source_story TEXT NOT NULL
+                    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                    title        TEXT NOT NULL,
+                    genre        TEXT NOT NULL,
+                    description  TEXT NOT NULL,
+                    source_story TEXT NOT NULL,
+                    image_base64  TEXT,
+                    image_mime_type TEXT,
+                    image_generated_style TEXT
                 )
             """)
+            # Migrate: add columns if an older DB exists without them
+            existing = {row[1] for row in conn.execute("PRAGMA table_info(catalog)").fetchall()}
+            if "image_base64" not in existing:
+                conn.execute("ALTER TABLE catalog ADD COLUMN image_base64 TEXT")
+            if "image_mime_type" not in existing:
+                conn.execute("ALTER TABLE catalog ADD COLUMN image_mime_type TEXT")
+            if "image_generated_style" not in existing:
+                conn.execute("ALTER TABLE catalog ADD COLUMN image_generated_style TEXT")
+
             if conn.execute("SELECT COUNT(*) FROM catalog").fetchone()[0] == 0:
                 conn.executemany(
                     "INSERT INTO catalog (title, genre, description, source_story) VALUES (?, ?, ?, ?)",
                     _SEED_STORIES,
                 )
 
+    # ── reads ────────────────────────────────────────────────────────────────
+
     def list_stories(self) -> list[CatalogStory]:
         with self._connect() as conn:
             rows = conn.execute(
-                "SELECT id, title, genre, description, source_story FROM catalog ORDER BY id"
+                "SELECT id, title, genre, description, source_story, image_base64, image_mime_type, image_generated_style FROM catalog ORDER BY id"
             ).fetchall()
         return [CatalogStory(**dict(r)) for r in rows]
 
     def get_story(self, story_id: int) -> Optional[CatalogStory]:
         with self._connect() as conn:
             row = conn.execute(
-                "SELECT id, title, genre, description, source_story FROM catalog WHERE id = ?",
+                "SELECT id, title, genre, description, source_story, image_base64, image_mime_type, image_generated_style FROM catalog WHERE id = ?",
                 (story_id,),
             ).fetchone()
         return CatalogStory(**dict(row)) if row else None
+
+    # ── writes ───────────────────────────────────────────────────────────────
+
+    def create_story(
+        self,
+        title: str,
+        genre: str,
+        description: str,
+        source_story: str,
+        image_base64: Optional[str] = None,
+        image_mime_type: Optional[str] = None,
+        image_generated_style: Optional[str] = None,
+    ) -> CatalogStory:
+        with self._connect() as conn:
+            cursor = conn.execute(
+                """INSERT INTO catalog (title, genre, description, source_story, image_base64, image_mime_type, image_generated_style)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                (title, genre, description, source_story, image_base64, image_mime_type, image_generated_style),
+            )
+            new_id = cursor.lastrowid
+        return self.get_story(new_id)  # type: ignore[return-value]
+
+    def update_story(
+        self,
+        story_id: int,
+        title: str,
+        genre: str,
+        description: str,
+        source_story: str,
+        image_base64: Optional[str] = None,
+        image_mime_type: Optional[str] = None,
+        image_generated_style: Optional[str] = None,
+    ) -> Optional[CatalogStory]:
+        with self._connect() as conn:
+            rows_affected = conn.execute(
+                """UPDATE catalog
+                   SET title = ?, genre = ?, description = ?, source_story = ?,
+                       image_base64 = ?, image_mime_type = ?, image_generated_style = ?
+                   WHERE id = ?""",
+                (title, genre, description, source_story, image_base64, image_mime_type, image_generated_style, story_id),
+            ).rowcount
+        return self.get_story(story_id) if rows_affected else None
+
+    def delete_story(self, story_id: int) -> bool:
+        with self._connect() as conn:
+            rows_affected = conn.execute(
+                "DELETE FROM catalog WHERE id = ?", (story_id,)
+            ).rowcount
+        return rows_affected > 0
 
 
 catalog_store = CatalogStore(db_path=settings.CATALOG_DB_PATH)

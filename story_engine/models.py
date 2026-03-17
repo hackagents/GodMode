@@ -8,6 +8,20 @@ class CatalogStoryResponse(BaseModel):
     title: str
     genre: str
     description: str
+    source_story: str
+    image_base64: Optional[str] = None
+    image_mime_type: Optional[str] = None
+    image_generated_style: Optional[str] = None
+
+
+class CatalogWriteRequest(BaseModel):
+    title: str
+    genre: str
+    description: str
+    source_story: str
+    image_base64: Optional[str] = None
+    image_mime_type: Optional[str] = None
+    image_generated_style: Optional[str] = None
 
 
 class StartStoryRequest(BaseModel):

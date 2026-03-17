@@ -29,6 +29,22 @@ def test_prompt_falls_back_to_source_story_when_no_scene_or_reveal():
     assert "Hamlet by Shakespeare" in prompt
 
 
+def test_prompt_uses_custom_style():
+    prompt = _build_image_prompt(
+        scene=None,
+        reveal="The king is dead.",
+        source_story="Hamlet",
+        style="oil painting, baroque, chiaroscuro",
+    )
+    assert "oil painting, baroque, chiaroscuro" in prompt
+    assert "cinematic illustration" not in prompt
+
+
+def test_prompt_falls_back_to_default_style_when_none():
+    prompt = _build_image_prompt(scene=None, reveal="Scene.", source_story="X", style=None)
+    assert "cinematic illustration" in prompt
+
+
 def test_prompt_truncates_long_scene():
     long_scene = "A" * 500
     prompt = _build_image_prompt(scene=long_scene, reveal=None, source_story="X")

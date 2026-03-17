@@ -19,6 +19,16 @@ async def get_session(session_id: str):
     )
 
 
+@router.post("/stories/{session_id}/end", status_code=200)
+async def end_session(session_id: str):
+    session = session_store.get(session_id)
+    if session is None:
+        raise HTTPException(status_code=404, detail="Session not found")
+    session.status = "ended"
+    session_store.update(session_id, session)
+    return {"session_id": session_id, "status": "ended"}
+
+
 @router.delete("/stories/{session_id}", status_code=204)
 async def delete_session(session_id: str):
     session = session_store.get(session_id)
