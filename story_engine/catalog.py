@@ -1,8 +1,11 @@
 from __future__ import annotations
 
-import sqlite3
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import Optional
+
+import psycopg2
+import psycopg2.extras
 
 from story_engine.config import settings
 
@@ -21,6 +24,12 @@ _SEED_STORIES = [
     ("Jane Eyre", "gothic romance", "An orphaned governess finds love at a brooding manor while hiding its dark secret.", "Jane Eyre by Charlotte Brontë"),
 ]
 
+_SELECT_COLS = (
+    "id, title, genre, description, source_story, "
+    "image_base64, image_mime_type, image_generated_style, "
+    "initial_plot, environment, text_style"
+)
+
 
 @dataclass
 class CatalogStory:
@@ -38,70 +47,77 @@ class CatalogStory:
 
 
 class CatalogStore:
-    def __init__(self, db_path: str):
-        self._db_path = db_path
+    def __init__(self, database_url: str):
+        self._database_url = database_url
 
-    def _connect(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self._db_path)
-        conn.row_factory = sqlite3.Row
-        return conn
+    def _connect(self) -> psycopg2.extensions.connection:
+        return psycopg2.connect(self._database_url)
+
+    @contextmanager
+    def _cursor(self):
+        conn = self._connect()
+        try:
+            with conn:
+                with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                    yield cur
+        finally:
+            conn.close()
 
     def init_db(self) -> None:
-        with self._connect() as conn:
-            conn.execute("""
-                CREATE TABLE IF NOT EXISTS catalog (
-                    id           INTEGER PRIMARY KEY AUTOINCREMENT,
-                    title        TEXT NOT NULL,
-                    genre        TEXT NOT NULL,
-                    description  TEXT NOT NULL,
-                    source_story TEXT NOT NULL,
-                    image_base64  TEXT,
-                    image_mime_type TEXT,
-                    image_generated_style TEXT,
-                    initial_plot  TEXT,
-                    environment   TEXT,
-                    text_style    TEXT
-                )
-            """)
-            # Migrate: add columns if an older DB exists without them
-            existing = {row[1] for row in conn.execute("PRAGMA table_info(catalog)").fetchall()}
-            if "image_base64" not in existing:
-                conn.execute("ALTER TABLE catalog ADD COLUMN image_base64 TEXT")
-            if "image_mime_type" not in existing:
-                conn.execute("ALTER TABLE catalog ADD COLUMN image_mime_type TEXT")
-            if "image_generated_style" not in existing:
-                conn.execute("ALTER TABLE catalog ADD COLUMN image_generated_style TEXT")
-            if "initial_plot" not in existing:
-                conn.execute("ALTER TABLE catalog ADD COLUMN initial_plot TEXT")
-            if "environment" not in existing:
-                conn.execute("ALTER TABLE catalog ADD COLUMN environment TEXT")
-            if "text_style" not in existing:
-                conn.execute("ALTER TABLE catalog ADD COLUMN text_style TEXT")
+        conn = self._connect()
+        try:
+            with conn:
+                with conn.cursor() as cur:
+                    cur.execute("""
+                        CREATE TABLE IF NOT EXISTS catalog (
+                            id                    SERIAL PRIMARY KEY,
+                            title                 TEXT NOT NULL,
+                            genre                 TEXT NOT NULL,
+                            description           TEXT NOT NULL,
+                            source_story          TEXT NOT NULL,
+                            image_base64          TEXT,
+                            image_mime_type       TEXT,
+                            image_generated_style TEXT,
+                            initial_plot          TEXT,
+                            environment           TEXT,
+                            text_style            TEXT
+                        )
+                    """)
+                    # Migrate: add columns that may be missing in older schemas
+                    cur.execute("""
+                        SELECT column_name FROM information_schema.columns
+                        WHERE table_name = 'catalog' AND table_schema = current_schema()
+                    """)
+                    existing = {row[0] for row in cur.fetchall()}
+                    for col in ("image_base64", "image_mime_type", "image_generated_style",
+                                "initial_plot", "environment", "text_style"):
+                        if col not in existing:
+                            cur.execute(f"ALTER TABLE catalog ADD COLUMN {col} TEXT")
 
-            if conn.execute("SELECT COUNT(*) FROM catalog").fetchone()[0] == 0:
-                conn.executemany(
-                    "INSERT INTO catalog (title, genre, description, source_story) VALUES (?, ?, ?, ?)",
-                    _SEED_STORIES,
-                )
+                    cur.execute("SELECT COUNT(*) FROM catalog")
+                    if cur.fetchone()[0] == 0:
+                        cur.executemany(
+                            "INSERT INTO catalog (title, genre, description, source_story) VALUES (%s, %s, %s, %s)",
+                            _SEED_STORIES,
+                        )
+        finally:
+            conn.close()
 
-    # ── reads ────────────────────────────────────────────────────────────────
+    # ── reads ─────────────────────────────────────────────────────────────────
 
     def list_stories(self) -> list[CatalogStory]:
-        with self._connect() as conn:
-            rows = conn.execute(
-                "SELECT id, title, genre, description, source_story, image_base64, image_mime_type, image_generated_style, initial_plot, environment, text_style FROM catalog ORDER BY id"
-            ).fetchall()
+        with self._cursor() as cur:
+            cur.execute(f"SELECT {_SELECT_COLS} FROM catalog ORDER BY id")
+            rows = cur.fetchall()
         return [CatalogStory(**dict(r)) for r in rows]
 
     def get_story(self, story_id: int) -> Optional[CatalogStory]:
-        with self._connect() as conn:
-            row = conn.execute(
-                "SELECT id, title, genre, description, source_story, image_base64, image_mime_type, image_generated_style, initial_plot, environment, text_style FROM catalog WHERE id = ?",
-                (story_id,),
-            ).fetchone()
+        with self._cursor() as cur:
+            cur.execute(f"SELECT {_SELECT_COLS} FROM catalog WHERE id = %s", (story_id,))
+            row = cur.fetchone()
         return CatalogStory(**dict(row)) if row else None
 
-    # ── writes ───────────────────────────────────────────────────────────────
+    # ── writes ────────────────────────────────────────────────────────────────
 
     def create_story(
         self,
@@ -116,13 +132,19 @@ class CatalogStore:
         environment: Optional[str] = None,
         text_style: Optional[str] = None,
     ) -> CatalogStory:
-        with self._connect() as conn:
-            cursor = conn.execute(
-                """INSERT INTO catalog (title, genre, description, source_story, image_base64, image_mime_type, image_generated_style, initial_plot, environment, text_style)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (title, genre, description, source_story, image_base64, image_mime_type, image_generated_style, initial_plot, environment, text_style),
+        with self._cursor() as cur:
+            cur.execute(
+                """INSERT INTO catalog
+                   (title, genre, description, source_story,
+                    image_base64, image_mime_type, image_generated_style,
+                    initial_plot, environment, text_style)
+                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                   RETURNING id""",
+                (title, genre, description, source_story,
+                 image_base64, image_mime_type, image_generated_style,
+                 initial_plot, environment, text_style),
             )
-            new_id = cursor.lastrowid
+            new_id = cur.fetchone()["id"]
         return self.get_story(new_id)  # type: ignore[return-value]
 
     def update_story(
@@ -139,23 +161,24 @@ class CatalogStore:
         environment: Optional[str] = None,
         text_style: Optional[str] = None,
     ) -> Optional[CatalogStory]:
-        with self._connect() as conn:
-            rows_affected = conn.execute(
+        with self._cursor() as cur:
+            cur.execute(
                 """UPDATE catalog
-                   SET title = ?, genre = ?, description = ?, source_story = ?,
-                       image_base64 = ?, image_mime_type = ?, image_generated_style = ?,
-                       initial_plot = ?, environment = ?, text_style = ?
-                   WHERE id = ?""",
-                (title, genre, description, source_story, image_base64, image_mime_type, image_generated_style, initial_plot, environment, text_style, story_id),
-            ).rowcount
+                   SET title = %s, genre = %s, description = %s, source_story = %s,
+                       image_base64 = %s, image_mime_type = %s, image_generated_style = %s,
+                       initial_plot = %s, environment = %s, text_style = %s
+                   WHERE id = %s""",
+                (title, genre, description, source_story,
+                 image_base64, image_mime_type, image_generated_style,
+                 initial_plot, environment, text_style, story_id),
+            )
+            rows_affected = cur.rowcount
         return self.get_story(story_id) if rows_affected else None
 
     def delete_story(self, story_id: int) -> bool:
-        with self._connect() as conn:
-            rows_affected = conn.execute(
-                "DELETE FROM catalog WHERE id = ?", (story_id,)
-            ).rowcount
-        return rows_affected > 0
+        with self._cursor() as cur:
+            cur.execute("DELETE FROM catalog WHERE id = %s", (story_id,))
+            return cur.rowcount > 0
 
 
-catalog_store = CatalogStore(db_path=settings.CATALOG_DB_PATH)
+catalog_store = CatalogStore(database_url=settings.DATABASE_URL)

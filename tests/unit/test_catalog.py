@@ -1,14 +1,18 @@
 from __future__ import annotations
 
 import pytest
+import psycopg2
+
 from story_engine.catalog import CatalogStore
 
 
 @pytest.fixture
-def store(tmp_path):
-    s = CatalogStore(db_path=str(tmp_path / "test.db"))
+def store(pg_url, pg_conn):
+    pg_conn.cursor().execute("DROP TABLE IF EXISTS catalog")
+    s = CatalogStore(database_url=pg_url)
     s.init_db()
-    return s
+    yield s
+    pg_conn.cursor().execute("DROP TABLE IF EXISTS catalog")
 
 
 # ── init & seed ───────────────────────────────────────────────────────────────
@@ -18,31 +22,35 @@ def test_init_seeds_stories(store):
     assert len(stories) == 12
 
 
-def test_init_is_idempotent(tmp_path):
+def test_init_is_idempotent(pg_url, pg_conn):
     """Calling init_db twice does not duplicate seed data."""
-    s = CatalogStore(db_path=str(tmp_path / "test.db"))
+    pg_conn.cursor().execute("DROP TABLE IF EXISTS catalog")
+    s = CatalogStore(database_url=pg_url)
     s.init_db()
     s.init_db()
     assert len(s.list_stories()) == 12
+    pg_conn.cursor().execute("DROP TABLE IF EXISTS catalog")
 
 
-def test_migration_adds_image_columns(tmp_path):
-    """A DB created without image columns should be migrated on init_db."""
-    import sqlite3
-    db = str(tmp_path / "old.db")
-    with sqlite3.connect(db) as conn:
-        conn.execute("""
-            CREATE TABLE catalog (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                title TEXT NOT NULL, genre TEXT NOT NULL,
-                description TEXT NOT NULL, source_story TEXT NOT NULL
-            )
-        """)
-    s = CatalogStore(db_path=db)
-    s.init_db()  # should add all three new columns without error
+def test_migration_adds_missing_columns(pg_url, pg_conn):
+    """A table created without newer columns should be migrated by init_db."""
+    pg_conn.cursor().execute("DROP TABLE IF EXISTS catalog")
+    pg_conn.cursor().execute("""
+        CREATE TABLE catalog (
+            id          SERIAL PRIMARY KEY,
+            title       TEXT NOT NULL,
+            genre       TEXT NOT NULL,
+            description TEXT NOT NULL,
+            source_story TEXT NOT NULL
+        )
+    """)
+    s = CatalogStore(database_url=pg_url)
+    s.init_db()  # should add all missing columns without error
     story = s.create_story("Test", "drama", "desc", "Test source")
     assert story.image_base64 is None
     assert story.image_generated_style is None
+    assert story.text_style is None
+    pg_conn.cursor().execute("DROP TABLE IF EXISTS catalog")
 
 
 # ── read ──────────────────────────────────────────────────────────────────────
@@ -56,7 +64,7 @@ def test_get_story_returns_correct_story(store):
 
 
 def test_get_story_returns_none_for_missing_id(store):
-    assert store.get_story(9999) is None
+    assert store.get_story(9999999) is None
 
 
 # ── create ────────────────────────────────────────────────────────────────────
@@ -99,7 +107,6 @@ def test_create_story_with_image(store):
     )
     assert story.image_base64 == "abc123"
     assert story.image_mime_type == "image/png"
-
     fetched = store.get_story(story.id)
     assert fetched.image_base64 == "abc123"
 
@@ -163,7 +170,7 @@ def test_update_story_clears_image(store):
 
 
 def test_update_nonexistent_story_returns_none(store):
-    result = store.update_story(9999, "T", "g", "d", "s")
+    result = store.update_story(9999999, "T", "g", "d", "s")
     assert result is None
 
 
@@ -176,7 +183,7 @@ def test_delete_story(store):
 
 
 def test_delete_nonexistent_story_returns_false(store):
-    assert store.delete_story(9999) is False
+    assert store.delete_story(9999999) is False
 
 
 # ── initial_plot & environment ────────────────────────────────────────────────
@@ -235,3 +242,49 @@ def test_update_story_clears_initial_plot_and_environment(store):
     )
     assert updated.initial_plot is None
     assert updated.environment is None
+
+
+# ── text_style ────────────────────────────────────────────────────────────────
+
+def test_create_story_with_text_style(store):
+    story = store.create_story(
+        title="Dune",
+        genre="sci-fi",
+        description="A desert planet saga.",
+        source_story="Dune by Frank Herbert",
+        text_style="Terse Hemingway prose, short punchy sentences",
+    )
+    assert story.text_style == "Terse Hemingway prose, short punchy sentences"
+    fetched = store.get_story(story.id)
+    assert fetched.text_style == "Terse Hemingway prose, short punchy sentences"
+
+
+def test_create_story_without_text_style_defaults_to_none(store):
+    story = store.create_story("Title", "drama", "desc", "source")
+    assert story.text_style is None
+
+
+def test_update_story_sets_text_style(store):
+    story = store.create_story("Title", "drama", "desc", "source")
+    updated = store.update_story(
+        story_id=story.id,
+        title="Title",
+        genre="drama",
+        description="desc",
+        source_story="source",
+        text_style="Florid Victorian gothic prose",
+    )
+    assert updated.text_style == "Florid Victorian gothic prose"
+
+
+def test_update_story_clears_text_style(store):
+    story = store.create_story("Title", "drama", "desc", "source", text_style="some style")
+    updated = store.update_story(
+        story_id=story.id,
+        title="Title",
+        genre="drama",
+        description="desc",
+        source_story="source",
+        text_style=None,
+    )
+    assert updated.text_style is None
