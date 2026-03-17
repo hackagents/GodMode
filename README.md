@@ -33,8 +33,9 @@ Since we are new to these tools, our goal was to experiment with combining text,
 # 5. What can be done better?
 If we had another block of hackathon time, here is what we could feasibly improve:
 
-* **Immersive 3D Worlds:** We could integrate Google's 3D modeling tools to create fully immersive 3D worlds where users can explore and interact with the story environment.
+* **Social Network Experience:** We could add a social layer where users can share their stories, collaborate on narratives, or compete in story challenges.
 * **Advanced Memory Management:** We could implement a more sophisticated memory system to better track character states, plot threads, and user progress across long stories.
+* **Create youtube shorts:** We could automatically generate youtube shorts from the stories users create.
 
 ---
 ## 1. Story Engine
@@ -63,13 +64,18 @@ Building AI agents requires managing the inherent delays of calling multiple lar
 
 ### 4. Product Clarity & Loop Design
 The concept is straightforward: it is an AI Dungeon Master.
-* **The Flow:** The user selects a story from the catalog (like Hamlet) or types a custom prompt -> reads/listens to the generated chapter -> looks at the generated image -> makes a choice -> repeat.
+* **The Flow:** 
+- The user selects a story from the catalog (like Hamlet) or types a custom prompt.
+- Reads/listens to the generated chapter.
+- Choses to interact with the story or even change the story line.
+- See how the story unfolds in a new direction.
+- Repeat and let user's imagination fly.
+
 * **State Management:** The backend maintains the story state, appending the user's choices and the AI's generated chapters sequentially, ensuring the ongoing context is maintained and narrative rules (e.g. keeping to a 10-chapter limit) are respected.
 
 ### 5. Social "Purpose" & Accessibility
 * **Accessibility:** Because we implemented Text-to-Speech (the app reads to you) and Speech-to-Text (you can talk to the app), it can be played almost entirely hands-free. This makes it a good fit for users with visual or motor impairments.
 * **Education:** It can take classic, older literature that students might find boring and turn it into an interactive game. Letting students explore "what if" scenarios in a book like *Hamlet* makes them actively participate in the reading.
-
 
 ## Setup instructions
 Check [CONTRIBUTING.md](CONTRIBUTING.md) for detailed setup instructions.
