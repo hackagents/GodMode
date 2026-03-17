@@ -35,6 +35,19 @@ MODEL_NAME=gemini-2.0-flash
 MAX_CHAPTERS=10
 ```
 
+### 4. Build the frontend
+
+Requires Node.js 18+.
+
+```bash
+cd frontend
+npm install
+npm run build
+cd ..
+```
+
+This produces `frontend/dist/` which the FastAPI server serves as a static SPA.
+
 ---
 
 ## Run

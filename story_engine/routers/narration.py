@@ -7,7 +7,7 @@ import logging
 import struct
 
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
-from fastapi.responses import Response
+from fastapi.responses import Response, StreamingResponse
 from google.genai import types as genai_types
 from google.genai.types import Modality
 
@@ -90,6 +90,90 @@ async def text_to_speech(
     except Exception:
         logger.exception("TTS generation failed")
         raise HTTPException(status_code=500, detail="TTS generation failed")
+
+
+@router.post("/narrate/tts/stream")
+async def tts_stream(
+    text: str = Form(...),
+    voice: str = Form("Kore"),
+    session_id: str = Form(None),
+    choice_key: str = Form(None),
+):
+    """Stream TTS audio as SSE events containing base64-encoded PCM chunks.
+
+    Each event: data: <base64_pcm>
+    Final event: data: [DONE]
+
+    PCM format: 16-bit signed little-endian, mono, 24 kHz.
+    """
+    if voice not in VOICES:
+        voice = "Kore"
+
+    # Serve from prefetch cache if available
+    if session_id and choice_key:
+        from story_engine.prefetch import tts_prefetch_cache
+        entry = tts_prefetch_cache.pop(session_id, choice_key)
+        if entry and entry.voice == voice:
+            _CHUNK_BYTES = 4096
+
+            async def cached_stream():
+                raw = entry.pcm
+                for i in range(0, len(raw), _CHUNK_BYTES):
+                    b64 = base64.b64encode(raw[i : i + _CHUNK_BYTES]).decode()
+                    yield f"data: {b64}\n\n"
+                yield "data: [DONE]\n\n"
+
+            logger.debug("TTS cache hit for choice %s session %s", choice_key, session_id)
+            return StreamingResponse(cached_stream(), media_type="text/event-stream")
+
+    async def event_stream():
+        queue: asyncio.Queue[str | None] = asyncio.Queue()
+        loop = asyncio.get_running_loop()
+
+        # Chunk size in bytes: 4096 bytes = 2048 samples = ~85 ms at 24 kHz 16-bit mono
+        _CHUNK_BYTES = 4096
+
+        def _run() -> None:
+            try:
+                # TTS models only support generate_content, not generate_content_stream.
+                # We generate the full audio, then manually chunk the PCM so the
+                # frontend can start playing the first ~85 ms before the rest arrives.
+                response = gemini_client.models.generate_content(
+                    model=_TTS_MODEL,
+                    contents=text,
+                    config=genai_types.GenerateContentConfig(
+                        response_modalities=[Modality.AUDIO],
+                        speech_config=genai_types.SpeechConfig(
+                            voice_config=genai_types.VoiceConfig(
+                                prebuilt_voice_config=genai_types.PrebuiltVoiceConfig(
+                                    voice_name=voice,
+                                )
+                            )
+                        ),
+                    ),
+                )
+                part = response.candidates[0].content.parts[0]
+                data = part.inline_data.data
+                raw: bytes = data if isinstance(data, bytes) else base64.b64decode(data)
+
+                for i in range(0, len(raw), _CHUNK_BYTES):
+                    b64 = base64.b64encode(raw[i : i + _CHUNK_BYTES]).decode()
+                    loop.call_soon_threadsafe(queue.put_nowait, b64)
+            except Exception:
+                logger.exception("TTS stream generation failed")
+            finally:
+                loop.call_soon_threadsafe(queue.put_nowait, None)
+
+        asyncio.create_task(asyncio.to_thread(_run))
+
+        while True:
+            item = await queue.get()
+            if item is None:
+                break
+            yield f"data: {item}\n\n"
+        yield "data: [DONE]\n\n"
+
+    return StreamingResponse(event_stream(), media_type="text/event-stream")
 
 
 @router.post("/narrate/stt")

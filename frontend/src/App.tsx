@@ -327,23 +327,132 @@ const NARRATION_LANGUAGES: { code: string; label: string }[] = [
 
 const NARRATION_VOICES = ['Aoede', 'Charon', 'Fenrir', 'Kore', 'Leda', 'Orus', 'Puck', 'Zephyr'];
 
-async function ttsFetch(text: string, voice: string): Promise<string> {
-  const form = new FormData();
-  form.append('text', text);
-  form.append('voice', voice);
-  const res = await fetch('/api/narrate/tts', { method: 'POST', body: form });
-  if (!res.ok) throw new Error('TTS request failed');
-  const blob = await res.blob();
-  return URL.createObjectURL(blob);
+// ── TTS streaming helpers ─────────────────────────────────────────────────────
+
+interface StreamBuffer {
+  chunks: string[];   // base64 PCM chunks received so far
+  done: boolean;
+  notify: (() => void) | null;  // called when a new chunk arrives or stream ends
 }
 
-function ttsPlay(url: string): Promise<void> {
-  return new Promise<void>((resolve, reject) => {
-    const audio = new Audio(url);
-    audio.onended = () => { URL.revokeObjectURL(url); resolve(); };
-    audio.onerror = () => { URL.revokeObjectURL(url); reject(new Error('Audio playback failed')); };
-    audio.play().catch(reject);
-  });
+/** Start fetching TTS audio as a stream of PCM chunks. Returns immediately;
+ *  chunks accumulate in the buffer as they arrive from the server. */
+function startTTSStream(
+  text: string,
+  voice: string,
+  signal: AbortSignal,
+  cacheKeys?: { sessionId: string; choiceKey: string },
+): StreamBuffer {
+  const buf: StreamBuffer = { chunks: [], done: false, notify: null };
+
+  (async () => {
+    try {
+      const form = new FormData();
+      form.append('text', text);
+      form.append('voice', voice);
+      if (cacheKeys) {
+        form.append('session_id', cacheKeys.sessionId);
+        form.append('choice_key', cacheKeys.choiceKey);
+      }
+      const res = await fetch('/api/narrate/tts/stream', { method: 'POST', body: form, signal });
+      if (!res.ok || !res.body) return;
+
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let partial = '';
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        const lines = (partial + decoder.decode(value, { stream: true })).split('\n\n');
+        partial = lines.pop() ?? '';
+        for (const line of lines) {
+          if (!line.startsWith('data: ')) continue;
+          const content = line.slice(6).trim();
+          if (content !== '[DONE]') buf.chunks.push(content);
+          buf.notify?.();
+        }
+      }
+    } catch {
+      // aborted or network error — treat as done
+    } finally {
+      buf.done = true;
+      buf.notify?.();
+    }
+  })();
+
+  return buf;
+}
+
+/** Play a StreamBuffer through the Web Audio API, scheduling chunks as they
+ *  arrive so the first words play immediately without waiting for the full audio.
+ *  `onSkipReady` is called with a function the caller can invoke to stop playback
+ *  early and resolve immediately (used for the Skip button). */
+async function ttsStreamPlay(
+  buf: StreamBuffer,
+  audioCtx: AudioContext,
+  activeSources: Set<AudioBufferSourceNode>,
+  signal: AbortSignal,
+  onSkipReady: (skip: () => void) => void,
+): Promise<void> {
+  let nextIdx = 0;
+  let nextPlayTime = audioCtx.currentTime + 0.05;
+
+  // Skip promise — resolved externally when the user clicks Skip
+  let resolveSkip!: () => void;
+  const skipPromise = new Promise<void>(r => { resolveSkip = r; });
+  onSkipReady(resolveSkip);
+
+  const scheduleChunk = (b64: string) => {
+    const raw = atob(b64);
+    const bytes = new Uint8Array(raw.length);
+    for (let i = 0; i < raw.length; i++) bytes[i] = raw.charCodeAt(i);
+
+    const samples = bytes.length / 2;
+    const float32 = new Float32Array(samples);
+    const view = new DataView(bytes.buffer);
+    for (let i = 0; i < samples; i++) {
+      float32[i] = view.getInt16(i * 2, true) / 32768;
+    }
+
+    const buffer = audioCtx.createBuffer(1, samples, 24000);
+    buffer.copyToChannel(float32, 0);
+    const source = audioCtx.createBufferSource();
+    source.buffer = buffer;
+    source.connect(audioCtx.destination);
+    const startAt = Math.max(nextPlayTime, audioCtx.currentTime + 0.02);
+    source.start(startAt);
+    activeSources.add(source);
+    source.onended = () => activeSources.delete(source);
+    nextPlayTime = startAt + buffer.duration;
+  };
+
+  while (true) {
+    if (signal.aborted) throw new DOMException('Aborted', 'AbortError');
+
+    while (nextIdx < buf.chunks.length) {
+      scheduleChunk(buf.chunks[nextIdx++]);
+    }
+
+    if (buf.done) break;
+
+    // Wait for the next chunk, done signal, or a skip request
+    await Promise.race([
+      new Promise<void>(resolve => { buf.notify = resolve; }),
+      skipPromise,
+    ]);
+    buf.notify = null;
+    if (signal.aborted) throw new DOMException('Aborted', 'AbortError');
+  }
+
+  // Wait for audio to finish — or skip if the user requests it early
+  const remaining = nextPlayTime - audioCtx.currentTime;
+  if (remaining > 0) {
+    await Promise.race([
+      new Promise<void>(resolve => setTimeout(resolve, remaining * 1000 + 200)),
+      skipPromise,
+    ]);
+  }
 }
 
 async function sttTranscribe(blob: Blob, language: string): Promise<string> {
@@ -367,6 +476,7 @@ function useNarration(
   onChoice: (key: string) => void,
   voice: string,
   language: string,
+  sessionId: string | null,
 ) {
   const [active, setActive] = useState(false);
   const [phase, setPhase] = useState<NarrationPhase>('idle');
@@ -376,21 +486,43 @@ function useNarration(
   const activeRef = useRef(false);
   const recorderRef = useRef<MediaRecorder | null>(null);
   const lastNarratedRef = useRef<number>(-1);
-  const pendingAudioRef = useRef<Promise<string | null> | null>(null);
+  const pendingStreamRef = useRef<StreamBuffer | null>(null);       // first paragraph
+  const pendingRemainStreamRef = useRef<StreamBuffer | null>(null); // remaining paragraphs
+  const pendingChoicesStreamRef = useRef<StreamBuffer | null>(null); // choices prompt
+  const audioCtxRef = useRef<AudioContext | null>(null);
+  const activeSourcesRef = useRef<Set<AudioBufferSourceNode>>(new Set());
+  const abortControllerRef = useRef<AbortController | null>(null);
+  const skipAudioRef = useRef<(() => void) | null>(null);
+  const stopListenRef = useRef<(() => void) | null>(null);
+  const lastChoiceKeyRef = useRef<string | null>(null);
   const onChoiceRef = useRef(onChoice);
   onChoiceRef.current = onChoice;
   const voiceRef = useRef(voice);
   voiceRef.current = voice;
   const langRef = useRef(language);
   langRef.current = language;
+  const sessionIdRef = useRef(sessionId);
+  sessionIdRef.current = sessionId;
 
   const stop = useCallback(() => {
     activeRef.current = false;
+    // Abort all in-flight TTS fetches and wake any waiting stream consumer
+    abortControllerRef.current?.abort();
+    abortControllerRef.current = null;
+    // Stop all scheduled Web Audio sources immediately
+    activeSourcesRef.current.forEach(s => { try { s.stop(0); } catch { /* already stopped */ } });
+    activeSourcesRef.current.clear();
+    // Suspend the audio context to release hardware resources
+    audioCtxRef.current?.suspend();
+    pendingStreamRef.current = null;
+    pendingRemainStreamRef.current = null;
+    pendingChoicesStreamRef.current = null;
+    skipAudioRef.current?.();   // unblock ttsStreamPlay's final wait
+    skipAudioRef.current = null;
+    stopListenRef.current?.();  // unblock listenForChoice's listen timeout
+    stopListenRef.current = null;
     recorderRef.current?.stop();
     recorderRef.current = null;
-    // Revoke any pre-fetched audio URL that was never played
-    pendingAudioRef.current?.then(url => { if (url) URL.revokeObjectURL(url); });
-    pendingAudioRef.current = null;
     setActive(false);
     setPhase('idle');
     setCountdown(0);
@@ -424,10 +556,15 @@ function useNarration(
     setCountdown(LISTEN_SECONDS);
     recorder.start(200); // 200 ms timeslice ensures ondataavailable fires during recording
 
-    // Countdown tick
+    // Countdown tick — race against stopListenRef so stop() can cancel immediately
+    const stopPromise = new Promise<void>(resolve => { stopListenRef.current = resolve; });
     const tick = setInterval(() => setCountdown(prev => (prev > 1 ? prev - 1 : 0)), 1000);
-    await new Promise<void>(resolve => setTimeout(resolve, LISTEN_SECONDS * 1000));
+    await Promise.race([
+      new Promise<void>(resolve => setTimeout(resolve, LISTEN_SECONDS * 1000)),
+      stopPromise,
+    ]);
     clearInterval(tick);
+    stopListenRef.current = null;
 
     if (!activeRef.current) { recorder.stop(); stream.getTracks().forEach(t => t.stop()); return; }
 
@@ -457,32 +594,53 @@ function useNarration(
     }
   }, []);
 
-  const buildNarrationText = (chapter: ChapterResponse) => {
-    const parts: string[] = [];
-    if (chapter.scene) parts.push(chapter.scene);
-    if (chapter.epitaph) parts.push(chapter.epitaph);
-    if (chapter.choices?.length && !chapter.is_ending) {
-      parts.push(
-        'Your choices are: ' +
+  /** Split a chapter into the three TTS parts we stream in parallel. */
+  const buildNarrationParts = (chapter: ChapterResponse) => {
+    const paragraphs = (chapter.scene ?? '').split('\n\n').filter(Boolean);
+    const firstPara = paragraphs[0] ?? chapter.epitaph ?? '';
+    const remaining = paragraphs.length > 1
+      ? paragraphs.slice(1).join('\n\n') + (chapter.epitaph ? '\n\n' + chapter.epitaph : '')
+      : '';
+    const choices = chapter.choices?.length && !chapter.is_ending
+      ? 'Your choices are: ' +
         chapter.choices.map(c => `${c.key}: ${c.text}`).join('. ') +
         '. Please say A, B, C, or D.'
-      );
-    }
-    return parts.join(' ');
+      : '';
+    return { firstPara, remaining, choices };
   };
 
   const narrateChapter = useCallback(async (chapter: ChapterResponse) => {
     if (!activeRef.current) return;
+    const audioCtx = audioCtxRef.current;
+    const signal = abortControllerRef.current?.signal;
+    if (!audioCtx || !signal) return;
+
+    const { firstPara, remaining, choices } = buildNarrationParts(chapter);
+
+    // Use pre-fetched streams where available; fall back to starting fresh
+    const firstStream = pendingStreamRef.current
+      ?? (firstPara ? startTTSStream(firstPara, voiceRef.current, signal) : null);
+    const remainStream = pendingRemainStreamRef.current
+      ?? (remaining ? startTTSStream(remaining, voiceRef.current, signal) : null);
+    const choicesStream = pendingChoicesStreamRef.current
+      ?? (choices ? startTTSStream(choices, voiceRef.current, signal) : null);
+    pendingStreamRef.current = null;
+    pendingRemainStreamRef.current = null;
+    pendingChoicesStreamRef.current = null;
+
+    const playStream = async (stream: StreamBuffer | null) => {
+      if (!stream || !activeRef.current) return;
+      await ttsStreamPlay(stream, audioCtx, activeSourcesRef.current, signal, (skip) => {
+        skipAudioRef.current = skip;
+      });
+      skipAudioRef.current = null;
+    };
 
     setPhase('speaking');
     try {
-      // Use the pre-fetched URL if available; otherwise fetch now
-      const urlPromise = pendingAudioRef.current ?? ttsFetch(buildNarrationText(chapter), voiceRef.current).catch(() => null);
-      pendingAudioRef.current = null;
-      const url = await urlPromise;
-      if (!url) throw new Error('No audio');
-      if (!activeRef.current) { URL.revokeObjectURL(url); return; }
-      await ttsPlay(url);
+      await playStream(firstStream);
+      await playStream(remainStream);
+      await playStream(choicesStream);
     } catch {
       if (activeRef.current) setPhase('idle');
       return;
@@ -497,18 +655,27 @@ function useNarration(
     }
   }, [listenForChoice]);
 
-  // Start fetching TTS audio as soon as a new chapter arrives — even while loading is still true
+  // Fire all three TTS requests in parallel as soon as a chapter arrives —
+  // even while loading is still true — so they're buffering before playback starts.
   useEffect(() => {
-    if (!active) return;
+    if (!active || !abortControllerRef.current) return;
     const chapter = chapters[chapters.length - 1];
     if (!chapter || chapter.chapter_number === lastNarratedRef.current) return;
-    const text = buildNarrationText(chapter);
-    if (text.trim()) {
-      pendingAudioRef.current = ttsFetch(text, voiceRef.current).catch(() => null);
-    }
+    const signal = abortControllerRef.current.signal;
+    const { firstPara, remaining, choices } = buildNarrationParts(chapter);
+
+    // Use the prefetch cache for the first paragraph if this chapter came from a known choice
+    const choiceKey = lastChoiceKeyRef.current;
+    const sid = sessionIdRef.current;
+    const cacheKeys = choiceKey && sid ? { sessionId: sid, choiceKey } : undefined;
+    lastChoiceKeyRef.current = null; // consume it
+
+    if (firstPara) pendingStreamRef.current = startTTSStream(firstPara, voiceRef.current, signal, cacheKeys);
+    if (remaining) pendingRemainStreamRef.current = startTTSStream(remaining, voiceRef.current, signal);
+    if (choices) pendingChoicesStreamRef.current = startTTSStream(choices, voiceRef.current, signal);
   }, [active, chapters]);
 
-  // Play once loading is done (audio is likely already in flight or ready)
+  // Play once loading is done — stream is already running, first chunks likely ready
   useEffect(() => {
     if (!active || loading) return;
     const chapter = chapters[chapters.length - 1];
@@ -518,12 +685,32 @@ function useNarration(
   }, [active, loading, chapters, narrateChapter]);
 
   const start = useCallback(() => {
+    // AudioContext must be created/resumed synchronously inside a user-gesture handler
+    // so Chrome doesn't block audio playback.
+    if (!audioCtxRef.current || audioCtxRef.current.state === 'closed') {
+      audioCtxRef.current = new AudioContext();
+    } else if (audioCtxRef.current.state === 'suspended') {
+      audioCtxRef.current.resume();
+    }
+    abortControllerRef.current = new AbortController();
     lastNarratedRef.current = -1;
     activeRef.current = true;
     setActive(true);
   }, []);
 
-  return { active, phase, countdown, start, stop };
+  const skip = useCallback(() => {
+    if (phase !== 'speaking') return;
+    activeSourcesRef.current.forEach(s => { try { s.stop(0); } catch { /* already stopped */ } });
+    activeSourcesRef.current.clear();
+    skipAudioRef.current?.();
+    skipAudioRef.current = null;
+  }, [phase]);
+
+  const notifyChoice = useCallback((key: string) => {
+    lastChoiceKeyRef.current = ['A', 'B', 'C', 'D'].includes(key) ? key : null;
+  }, []);
+
+  return { active, phase, countdown, start, stop, skip, notifyChoice };
 }
 
 // ── App ───────────────────────────────────────────────────────────────────────
@@ -549,6 +736,7 @@ function App() {
     chapters, loading,
     (input) => handleChoiceRef.current(input),
     narrationVoice, narrationLang,
+    sessionId,
   );
 
   // Catalog management
@@ -670,6 +858,7 @@ function App() {
 
   const handleChoice = async (input: string) => {
     if (!sessionId) return;
+    narration.notifyChoice(input);
     setLoading(true);
     setError('');
     setCurrentProse('');
@@ -810,7 +999,16 @@ function App() {
             )}
             {narration.active && (
               <span className="narration-phase">
-                {narration.phase === 'speaking' && '🔊 Speaking…'}
+                {narration.phase === 'speaking' && (
+                  <>
+                    🔊 Speaking…
+                    {lastChapter?.choices && !lastChapter.is_ending && (
+                      <button className="btn-skip-narration" onClick={narration.skip}>
+                        Skip ▶
+                      </button>
+                    )}
+                  </>
+                )}
                 {narration.phase === 'listening' && `🎙 Listening… ${narration.countdown}s`}
                 {narration.phase === 'processing' && '⏳ Processing…'}
               </span>
