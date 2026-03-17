@@ -32,6 +32,8 @@ class CatalogStory:
     image_base64: Optional[str] = field(default=None)
     image_mime_type: Optional[str] = field(default=None)
     image_generated_style: Optional[str] = field(default=None)
+    initial_plot: Optional[str] = field(default=None)
+    environment: Optional[str] = field(default=None)
 
 
 class CatalogStore:
@@ -54,7 +56,9 @@ class CatalogStore:
                     source_story TEXT NOT NULL,
                     image_base64  TEXT,
                     image_mime_type TEXT,
-                    image_generated_style TEXT
+                    image_generated_style TEXT,
+                    initial_plot  TEXT,
+                    environment   TEXT
                 )
             """)
             # Migrate: add columns if an older DB exists without them
@@ -65,6 +69,10 @@ class CatalogStore:
                 conn.execute("ALTER TABLE catalog ADD COLUMN image_mime_type TEXT")
             if "image_generated_style" not in existing:
                 conn.execute("ALTER TABLE catalog ADD COLUMN image_generated_style TEXT")
+            if "initial_plot" not in existing:
+                conn.execute("ALTER TABLE catalog ADD COLUMN initial_plot TEXT")
+            if "environment" not in existing:
+                conn.execute("ALTER TABLE catalog ADD COLUMN environment TEXT")
 
             if conn.execute("SELECT COUNT(*) FROM catalog").fetchone()[0] == 0:
                 conn.executemany(
@@ -77,14 +85,14 @@ class CatalogStore:
     def list_stories(self) -> list[CatalogStory]:
         with self._connect() as conn:
             rows = conn.execute(
-                "SELECT id, title, genre, description, source_story, image_base64, image_mime_type, image_generated_style FROM catalog ORDER BY id"
+                "SELECT id, title, genre, description, source_story, image_base64, image_mime_type, image_generated_style, initial_plot, environment FROM catalog ORDER BY id"
             ).fetchall()
         return [CatalogStory(**dict(r)) for r in rows]
 
     def get_story(self, story_id: int) -> Optional[CatalogStory]:
         with self._connect() as conn:
             row = conn.execute(
-                "SELECT id, title, genre, description, source_story, image_base64, image_mime_type, image_generated_style FROM catalog WHERE id = ?",
+                "SELECT id, title, genre, description, source_story, image_base64, image_mime_type, image_generated_style, initial_plot, environment FROM catalog WHERE id = ?",
                 (story_id,),
             ).fetchone()
         return CatalogStory(**dict(row)) if row else None
@@ -100,12 +108,14 @@ class CatalogStore:
         image_base64: Optional[str] = None,
         image_mime_type: Optional[str] = None,
         image_generated_style: Optional[str] = None,
+        initial_plot: Optional[str] = None,
+        environment: Optional[str] = None,
     ) -> CatalogStory:
         with self._connect() as conn:
             cursor = conn.execute(
-                """INSERT INTO catalog (title, genre, description, source_story, image_base64, image_mime_type, image_generated_style)
-                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
-                (title, genre, description, source_story, image_base64, image_mime_type, image_generated_style),
+                """INSERT INTO catalog (title, genre, description, source_story, image_base64, image_mime_type, image_generated_style, initial_plot, environment)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (title, genre, description, source_story, image_base64, image_mime_type, image_generated_style, initial_plot, environment),
             )
             new_id = cursor.lastrowid
         return self.get_story(new_id)  # type: ignore[return-value]
@@ -120,14 +130,17 @@ class CatalogStore:
         image_base64: Optional[str] = None,
         image_mime_type: Optional[str] = None,
         image_generated_style: Optional[str] = None,
+        initial_plot: Optional[str] = None,
+        environment: Optional[str] = None,
     ) -> Optional[CatalogStory]:
         with self._connect() as conn:
             rows_affected = conn.execute(
                 """UPDATE catalog
                    SET title = ?, genre = ?, description = ?, source_story = ?,
-                       image_base64 = ?, image_mime_type = ?, image_generated_style = ?
+                       image_base64 = ?, image_mime_type = ?, image_generated_style = ?,
+                       initial_plot = ?, environment = ?
                    WHERE id = ?""",
-                (title, genre, description, source_story, image_base64, image_mime_type, image_generated_style, story_id),
+                (title, genre, description, source_story, image_base64, image_mime_type, image_generated_style, initial_plot, environment, story_id),
             ).rowcount
         return self.get_story(story_id) if rows_affected else None
 

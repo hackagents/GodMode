@@ -15,6 +15,8 @@ def _to_response(s) -> CatalogStoryResponse:
         image_base64=s.image_base64,
         image_mime_type=s.image_mime_type,
         image_generated_style=s.image_generated_style,
+        initial_plot=s.initial_plot,
+        environment=s.environment,
     )
 
 
@@ -41,6 +43,8 @@ async def create_catalog_story(request: CatalogWriteRequest):
         image_base64=request.image_base64,
         image_mime_type=request.image_mime_type,
         image_generated_style=request.image_generated_style,
+        initial_plot=request.initial_plot,
+        environment=request.environment,
     )
     return _to_response(story)
 
@@ -56,6 +60,8 @@ async def update_catalog_story(story_id: int, request: CatalogWriteRequest):
         image_base64=request.image_base64,
         image_mime_type=request.image_mime_type,
         image_generated_style=request.image_generated_style,
+        initial_plot=request.initial_plot,
+        environment=request.environment,
     )
     if story is None:
         raise HTTPException(status_code=404, detail="Catalog story not found")

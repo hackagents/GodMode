@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, useCallback } from 'react'
 import './App.css'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -35,6 +35,8 @@ interface CatalogStory {
   image_base64?: string;
   image_mime_type?: string;
   image_generated_style?: string;
+  initial_plot?: string;
+  environment?: string;
 }
 
 type CatalogFormData = Omit<CatalogStory, 'id'>;
@@ -57,21 +59,6 @@ function StoryPanel({ chapter }: { chapter: ChapterResponse }) {
           <div className="resolution"><strong>Resolution:</strong> {chapter.resolution}</div>
         )}
         {chapter.scene && <div className="prose">{chapter.scene}</div>}
-        {chapter.reveal && (
-          <div className="reveal"><strong>REVEAL:</strong> {chapter.reveal}</div>
-        )}
-        {chapter.stakes && chapter.stakes.length > 0 && (
-          <div className="stakes">
-            <strong>STAKES:</strong>
-            <ul>
-              {chapter.stakes.map((s, i) => (
-                <li key={i}>
-                  <span className={`label-${s.label.toLowerCase()}`}>{s.label}</span> — {s.text}
-                </li>
-              ))}
-            </ul>
-          </div>
-        )}
         {chapter.epitaph && <div className="epitaph">{chapter.epitaph}</div>}
       </div>
     </div>
@@ -88,6 +75,8 @@ const EMPTY_FORM: CatalogFormData = {
   image_base64: undefined,
   image_mime_type: undefined,
   image_generated_style: undefined,
+  initial_plot: undefined,
+  environment: undefined,
 };
 
 interface CatalogModalProps {
@@ -195,6 +184,26 @@ function CatalogModal({ mode, initial, onSave, onClose }: CatalogModalProps) {
         </div>
 
         <div className="form-field">
+          <label>Initial Plot</label>
+          <textarea
+            rows={3}
+            value={form.initial_plot ?? ''}
+            onChange={e => setForm(p => ({ ...p, initial_plot: e.target.value || undefined }))}
+            placeholder="e.g. The story begins with Hamlet returning from university to find his father dead and mother remarried — leave blank to let the AI decide"
+          />
+        </div>
+
+        <div className="form-field">
+          <label>Environment</label>
+          <textarea
+            rows={2}
+            value={form.environment ?? ''}
+            onChange={e => setForm(p => ({ ...p, environment: e.target.value || undefined }))}
+            placeholder="e.g. Elsinore Castle, medieval Denmark, cold and politically tense — leave blank to let the AI decide"
+          />
+        </div>
+
+        <div className="form-field">
           <label>Image Generation Style</label>
           <textarea
             rows={2}
@@ -242,6 +251,206 @@ function CatalogModal({ mode, initial, onSave, onClose }: CatalogModalProps) {
   );
 }
 
+// ── Narration helpers (Vertex AI TTS + STT via backend) ───────────────────────
+
+const NARRATION_LANGUAGES: { code: string; label: string }[] = [
+  { code: 'en-US', label: 'English (US)' },
+  { code: 'en-GB', label: 'English (UK)' },
+  { code: 'es-ES', label: 'Spanish' },
+  { code: 'fr-FR', label: 'French' },
+  { code: 'de-DE', label: 'German' },
+  { code: 'it-IT', label: 'Italian' },
+  { code: 'pt-BR', label: 'Portuguese (BR)' },
+  { code: 'ja-JP', label: 'Japanese' },
+  { code: 'ko-KR', label: 'Korean' },
+  { code: 'zh-CN', label: 'Chinese (Mandarin)' },
+  { code: 'hi-IN', label: 'Hindi' },
+  { code: 'ar-SA', label: 'Arabic' },
+  { code: 'ru-RU', label: 'Russian' },
+  { code: 'nl-NL', label: 'Dutch' },
+  { code: 'pl-PL', label: 'Polish' },
+  { code: 'sv-SE', label: 'Swedish' },
+  { code: 'tr-TR', label: 'Turkish' },
+  { code: 'id-ID', label: 'Indonesian' },
+  { code: 'vi-VN', label: 'Vietnamese' },
+  { code: 'th-TH', label: 'Thai' },
+];
+
+const NARRATION_VOICES = ['Aoede', 'Charon', 'Fenrir', 'Kore', 'Leda', 'Orus', 'Puck', 'Zephyr'];
+
+async function ttsSpeak(text: string, voice: string): Promise<void> {
+  const form = new FormData();
+  form.append('text', text);
+  form.append('voice', voice);
+  const res = await fetch('/api/narrate/tts', { method: 'POST', body: form });
+  if (!res.ok) throw new Error('TTS request failed');
+  // Use Blob URL + HTMLAudioElement — avoids AudioContext suspended-state issues in Chrome
+  const blob = await res.blob();
+  const url = URL.createObjectURL(blob);
+  return new Promise<void>((resolve, reject) => {
+    const audio = new Audio(url);
+    audio.onended = () => { URL.revokeObjectURL(url); resolve(); };
+    audio.onerror = () => { URL.revokeObjectURL(url); reject(new Error('Audio playback failed')); };
+    audio.play().catch(reject);
+  });
+}
+
+async function sttTranscribe(blob: Blob, language: string): Promise<string> {
+  const form = new FormData();
+  form.append('audio', blob, 'recording.webm');
+  form.append('language', language);
+  const res = await fetch('/api/narrate/stt', { method: 'POST', body: form });
+  if (!res.ok) throw new Error('STT request failed');
+  const { transcript } = await res.json();
+  return (transcript as string) || '';
+}
+
+// ── useNarration ──────────────────────────────────────────────────────────────
+
+type NarrationPhase = 'idle' | 'speaking' | 'listening' | 'processing';
+const LISTEN_SECONDS = 5;
+
+function useNarration(
+  chapters: ChapterResponse[],
+  loading: boolean,
+  onChoice: (key: string) => void,
+  voice: string,
+  language: string,
+) {
+  const [active, setActive] = useState(false);
+  const [phase, setPhase] = useState<NarrationPhase>('idle');
+  const [countdown, setCountdown] = useState(0);
+
+  // Refs so async callbacks always see fresh values
+  const activeRef = useRef(false);
+  const recorderRef = useRef<MediaRecorder | null>(null);
+  const lastNarratedRef = useRef<number>(-1);
+  const onChoiceRef = useRef(onChoice);
+  onChoiceRef.current = onChoice;
+  const voiceRef = useRef(voice);
+  voiceRef.current = voice;
+  const langRef = useRef(language);
+  langRef.current = language;
+
+  const stop = useCallback(() => {
+    activeRef.current = false;
+    recorderRef.current?.stop();
+    recorderRef.current = null;
+    setActive(false);
+    setPhase('idle');
+    setCountdown(0);
+    lastNarratedRef.current = -1;
+  }, []);
+
+  const listenForChoice = useCallback(async (choices: Choice[]) => {
+    if (!activeRef.current) return;
+
+    let stream: MediaStream;
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    } catch {
+      setPhase('idle');
+      return;
+    }
+
+    // Prefer audio/webm;codecs=opus — Chrome sometimes defaults to video/webm
+    const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
+      ? 'audio/webm;codecs=opus'
+      : MediaRecorder.isTypeSupported('audio/webm') ? 'audio/webm' : '';
+    const recorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
+    recorderRef.current = recorder;
+    const chunks: Blob[] = [];
+    recorder.ondataavailable = e => { if (e.data.size > 0) chunks.push(e.data); };
+
+    // Set onstop BEFORE calling stop() to avoid the race where the event fires first
+    const stoppedPromise = new Promise<void>(resolve => { recorder.onstop = () => resolve(); });
+
+    setPhase('listening');
+    setCountdown(LISTEN_SECONDS);
+    recorder.start(200); // 200 ms timeslice ensures ondataavailable fires during recording
+
+    // Countdown tick
+    const tick = setInterval(() => setCountdown(prev => (prev > 1 ? prev - 1 : 0)), 1000);
+    await new Promise<void>(resolve => setTimeout(resolve, LISTEN_SECONDS * 1000));
+    clearInterval(tick);
+
+    if (!activeRef.current) { recorder.stop(); stream.getTracks().forEach(t => t.stop()); return; }
+
+    recorder.stop();
+    stream.getTracks().forEach(t => t.stop());
+    await stoppedPromise;
+    recorderRef.current = null;
+
+    if (!activeRef.current) return;
+
+    setPhase('processing');
+    const blob = new Blob(chunks, { type: recorder.mimeType || mimeType || 'audio/webm' });
+
+    try {
+      const transcript = await sttTranscribe(blob, langRef.current);
+      const upper = transcript.toUpperCase();
+      const key = (['A', 'B', 'C', 'D'] as const).find(k => new RegExp(`\\b${k}\\b`).test(upper));
+      if (key && choices.some(c => c.key === key)) {
+        setPhase('idle');
+        onChoiceRef.current(key);
+      } else {
+        // Unrecognized — fall back to idle so user can click manually
+        setPhase('idle');
+      }
+    } catch {
+      setPhase('idle');
+    }
+  }, []);
+
+  const narrateChapter = useCallback(async (chapter: ChapterResponse) => {
+    if (!activeRef.current) return;
+
+    const parts: string[] = [];
+    if (chapter.scene) parts.push(chapter.scene);
+    if (chapter.epitaph) parts.push(chapter.epitaph);
+    if (chapter.choices?.length && !chapter.is_ending) {
+      parts.push(
+        'Your choices are: ' +
+        chapter.choices.map(c => `${c.key}: ${c.text}`).join('. ') +
+        '. Please say A, B, C, or D.'
+      );
+    }
+
+    setPhase('speaking');
+    try {
+      await ttsSpeak(parts.join(' '), voiceRef.current);
+    } catch {
+      if (activeRef.current) setPhase('idle');
+      return;
+    }
+
+    if (!activeRef.current) return;
+
+    if (chapter.choices?.length && !chapter.is_ending) {
+      await listenForChoice(chapter.choices);
+    } else {
+      setPhase('idle');
+    }
+  }, [listenForChoice]);
+
+  // Trigger narration whenever a new chapter lands while active
+  useEffect(() => {
+    if (!active || loading) return;
+    const chapter = chapters[chapters.length - 1];
+    if (!chapter || chapter.chapter_number === lastNarratedRef.current) return;
+    lastNarratedRef.current = chapter.chapter_number;
+    narrateChapter(chapter);
+  }, [active, loading, chapters, narrateChapter]);
+
+  const start = useCallback(() => {
+    lastNarratedRef.current = -1;
+    activeRef.current = true;
+    setActive(true);
+  }, []);
+
+  return { active, phase, countdown, start, stop };
+}
+
 // ── App ───────────────────────────────────────────────────────────────────────
 
 function App() {
@@ -256,6 +465,16 @@ function App() {
   const [error, setError] = useState('');
   const [isStarted, setIsStarted] = useState(false);
   const [userInput, setUserInput] = useState('');
+
+  // Narration — handleChoiceRef breaks the forward-reference cycle
+  const handleChoiceRef = useRef<(input: string) => void>(() => {});
+  const [narrationVoice, setNarrationVoice] = useState('Kore');
+  const [narrationLang, setNarrationLang] = useState('en-US');
+  const narration = useNarration(
+    chapters, loading,
+    (input) => handleChoiceRef.current(input),
+    narrationVoice, narrationLang,
+  );
 
   // Catalog management
   const [modalMode, setModalMode] = useState<'add' | 'edit'>('add');
@@ -368,6 +587,7 @@ function App() {
   };
 
   const endStory = async () => {
+    narration.stop();
     if (!sessionId) { resetToStart(); return; }
     await fetch(`/api/stories/${sessionId}/end`, { method: 'POST' }).catch(() => {});
     resetToStart();
@@ -394,8 +614,11 @@ function App() {
       setLoading(false);
     }
   };
+  // Keep ref in sync so narration callbacks always invoke the latest handleChoice
+  handleChoiceRef.current = handleChoice;
 
   const resetToStart = () => {
+    narration.stop();
     setIsStarted(false);
     setSessionId(null);
     setChapters([]);
@@ -485,6 +708,38 @@ function App() {
       <header className="header">
         <div className="header-top">
           <button className="btn-back" onClick={resetToStart}>← Back to catalog</button>
+          <div className="narration-controls">
+            <select
+              className="narration-select"
+              value={narrationVoice}
+              onChange={e => setNarrationVoice(e.target.value)}
+              disabled={narration.active}
+              title="Voice"
+            >
+              {NARRATION_VOICES.map(v => <option key={v} value={v}>{v}</option>)}
+            </select>
+            <select
+              className="narration-select"
+              value={narrationLang}
+              onChange={e => setNarrationLang(e.target.value)}
+              disabled={narration.active}
+              title="Language"
+            >
+              {NARRATION_LANGUAGES.map(l => <option key={l.code} value={l.code}>{l.label}</option>)}
+            </select>
+            {narration.active ? (
+              <button className="btn-narrate btn-narrate-stop" onClick={narration.stop}>⏹ Stop</button>
+            ) : (
+              <button className="btn-narrate" onClick={narration.start} disabled={loading}>🔊 Narrate</button>
+            )}
+            {narration.active && (
+              <span className="narration-phase">
+                {narration.phase === 'speaking' && '🔊 Speaking…'}
+                {narration.phase === 'listening' && `🎙 Listening… ${narration.countdown}s`}
+                {narration.phase === 'processing' && '⏳ Processing…'}
+              </span>
+            )}
+          </div>
         </div>
         <h1>{selectedStory?.title ?? 'Custom Story'}</h1>
         <div className="status-bar">

@@ -4,7 +4,7 @@ from fastapi import FastAPI
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from story_engine.routers import stories, chapters, sessions
-from story_engine.routers import catalog
+from story_engine.routers import catalog, narration
 from story_engine.catalog import catalog_store
 from story_engine.session import session_store
 
@@ -25,6 +25,7 @@ app.include_router(catalog.router, prefix="/api")
 app.include_router(stories.router, prefix="/api")
 app.include_router(chapters.router, prefix="/api")
 app.include_router(sessions.router, prefix="/api")
+app.include_router(narration.router, prefix="/api")
 
 # Serve Vite-built static assets (JS, CSS, images)
 _assets_dir = os.path.join(_DIST, "assets")

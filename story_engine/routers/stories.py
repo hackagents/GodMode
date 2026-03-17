@@ -33,7 +33,9 @@ async def start_story(request: StartStoryRequest):
         session = session_store.create(source_story, catalog_id=request.catalog_id)
         yield f"data: [SESSION_ID] {session.session_id}\n\n"
 
-        messages = build_opening_messages(source_story)
+        initial_plot = catalog_entry.initial_plot if request.catalog_id is not None else None
+        environment = catalog_entry.environment if request.catalog_id is not None else None
+        messages = build_opening_messages(source_story, initial_plot=initial_plot, environment=environment)
         # Convert to genai Content format
         contents = [genai_types.Content(role=m["role"], parts=[genai_types.Part(text=m["content"])]) for m in messages]
 

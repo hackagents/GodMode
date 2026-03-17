@@ -12,6 +12,8 @@ class CatalogStoryResponse(BaseModel):
     image_base64: Optional[str] = None
     image_mime_type: Optional[str] = None
     image_generated_style: Optional[str] = None
+    initial_plot: Optional[str] = None
+    environment: Optional[str] = None
 
 
 class CatalogWriteRequest(BaseModel):
@@ -22,6 +24,8 @@ class CatalogWriteRequest(BaseModel):
     image_base64: Optional[str] = None
     image_mime_type: Optional[str] = None
     image_generated_style: Optional[str] = None
+    initial_plot: Optional[str] = None
+    environment: Optional[str] = None
 
 
 class StartStoryRequest(BaseModel):

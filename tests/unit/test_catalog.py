@@ -177,3 +177,61 @@ def test_delete_story(store):
 
 def test_delete_nonexistent_story_returns_false(store):
     assert store.delete_story(9999) is False
+
+
+# ── initial_plot & environment ────────────────────────────────────────────────
+
+def test_create_story_with_initial_plot_and_environment(store):
+    story = store.create_story(
+        title="Dune",
+        genre="sci-fi",
+        description="A desert planet saga.",
+        source_story="Dune by Frank Herbert",
+        initial_plot="Paul arrives on Arrakis and learns the ways of the Fremen.",
+        environment="Desert planet Arrakis, brutal heat, scarce water, political intrigue",
+    )
+    assert story.initial_plot == "Paul arrives on Arrakis and learns the ways of the Fremen."
+    assert story.environment == "Desert planet Arrakis, brutal heat, scarce water, political intrigue"
+    fetched = store.get_story(story.id)
+    assert fetched.initial_plot == story.initial_plot
+    assert fetched.environment == story.environment
+
+
+def test_create_story_without_plot_and_environment_defaults_to_none(store):
+    story = store.create_story("Title", "drama", "desc", "source")
+    assert story.initial_plot is None
+    assert story.environment is None
+
+
+def test_update_story_sets_initial_plot_and_environment(store):
+    story = store.create_story("Title", "drama", "desc", "source")
+    updated = store.update_story(
+        story_id=story.id,
+        title="Title",
+        genre="drama",
+        description="desc",
+        source_story="source",
+        initial_plot="A hero rises.",
+        environment="Ancient Rome",
+    )
+    assert updated.initial_plot == "A hero rises."
+    assert updated.environment == "Ancient Rome"
+
+
+def test_update_story_clears_initial_plot_and_environment(store):
+    story = store.create_story(
+        "Title", "drama", "desc", "source",
+        initial_plot="Some plot",
+        environment="Some place",
+    )
+    updated = store.update_story(
+        story_id=story.id,
+        title="Title",
+        genre="drama",
+        description="desc",
+        source_story="source",
+        initial_plot=None,
+        environment=None,
+    )
+    assert updated.initial_plot is None
+    assert updated.environment is None
