@@ -14,28 +14,38 @@ logger = logging.getLogger(__name__)
 _STYLE = "cinematic illustration, dramatic lighting, highly detailed, painterly"
 
 
-def _build_image_prompt(scene: Optional[str], reveal: Optional[str], source_story: str) -> str:
+def _build_image_prompt(
+    scene: Optional[str],
+    reveal: Optional[str],
+    source_story: str,
+    style: Optional[str] = None,
+) -> str:
     # Prefer the reveal sentence — it's a single vivid dramatic line.
     # Fall back to the opening of the scene.
     if reveal:
         visual = reveal
     elif scene:
-        # Take the first paragraph only
         first_para = scene.strip().split("\n\n")[0]
         visual = first_para[:300]
     else:
         visual = source_story
 
-    return f"{visual} — {_STYLE}"
+    effective_style = style or _STYLE
+    return f"{visual} — {effective_style}"
 
 
 def generate_chapter_image(
     scene: Optional[str],
     reveal: Optional[str],
     source_story: str,
+    style: Optional[str] = None,
 ) -> tuple[str, str] | None:
-    """Return (base64_string, mime_type) or None if generation fails."""
-    prompt = _build_image_prompt(scene, reveal, source_story)
+    """Return (base64_string, mime_type) or None if generation fails.
+
+    ``style`` overrides the default _STYLE when the catalog entry has a
+    custom image_generated_style set.
+    """
+    prompt = _build_image_prompt(scene, reveal, source_story, style=style)
     try:
         response = gemini_client.models.generate_images(
             model=settings.IMAGEN_MODEL,

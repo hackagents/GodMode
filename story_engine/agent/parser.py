@@ -71,7 +71,8 @@ def parse_chapter(raw: str, chapter_number: int) -> ChapterResponse:
                 line = line.strip()
                 m = re.match(r'([A-D])\.\s*(.+)', line)
                 if m:
-                    choices.append(Choice(key=m.group(1), text=m.group(2).strip()))
+                    text = re.sub(r'\*+', '', m.group(2)).strip()
+                    choices.append(Choice(key=m.group(1), text=text))
         elif re.search(r'\[END\s*[—-]', raw):
             is_ending = True
     except Exception as e:
