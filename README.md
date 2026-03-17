@@ -14,8 +14,13 @@ https://godmode-751680308373.europe-west1.run.app/
 
 ---
 
+## Recorded Demo
+https://www.loom.com/share/3d2510b94ba4470c89774be5f33bc2a8
+
+---
+
 # 2. Which track is this from? GenAI, arts
-Arts and entertainment
+Creative and Entertainment Agents
 
 ---
 # 3. Which Google Cloud services are used?
