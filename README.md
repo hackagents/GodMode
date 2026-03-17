@@ -8,6 +8,11 @@ GodMode — Every story. Your rules.
 
 ---
 
+## Live Demo
+https://godmode-751680308373.europe-west1.run.app/
+
+---
+
 # 2. Which track is this from? GenAI, arts
 Arts and entertainment
 
@@ -81,6 +86,3 @@ The concept is straightforward: it is an AI Dungeon Master.
 Check [CONTRIBUTING.md](CONTRIBUTING.md) for detailed setup instructions.
 
 ---
-
-## Cloud instance
-https://godmode-751680308373.europe-west1.run.app/
