@@ -25,7 +25,6 @@ RUN uv sync --frozen --no-dev
 
 # Copy backend source
 COPY story_engine/ story_engine/
-COPY prompts/ prompts/
 
 # Copy pre-built frontend (run: cd frontend && npm install && npm run build)
 # If using the multi-stage build above, replace this with:
