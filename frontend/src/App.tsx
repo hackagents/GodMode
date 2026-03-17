@@ -37,6 +37,7 @@ interface CatalogStory {
   image_generated_style?: string;
   initial_plot?: string;
   environment?: string;
+  text_style?: string;
 }
 
 type CatalogFormData = Omit<CatalogStory, 'id'>;
@@ -77,6 +78,7 @@ const EMPTY_FORM: CatalogFormData = {
   image_generated_style: undefined,
   initial_plot: undefined,
   environment: undefined,
+  text_style: undefined,
 };
 
 interface CatalogModalProps {
@@ -91,6 +93,7 @@ function CatalogModal({ mode, initial, onSave, onClose }: CatalogModalProps) {
     initial ? { ...initial } : { ...EMPTY_FORM }
   );
   const [saving, setSaving] = useState(false);
+  const [generating, setGenerating] = useState(false);
   const [error, setError] = useState('');
 
   const imagePreview = form.image_base64
@@ -204,6 +207,16 @@ function CatalogModal({ mode, initial, onSave, onClose }: CatalogModalProps) {
         </div>
 
         <div className="form-field">
+          <label>Writing Style</label>
+          <textarea
+            rows={2}
+            value={form.text_style ?? ''}
+            onChange={e => setForm(p => ({ ...p, text_style: e.target.value || undefined }))}
+            placeholder="e.g. Terse Hemingway prose, short punchy sentences — or: florid Victorian gothic, rich with metaphor — leave blank for default"
+          />
+        </div>
+
+        <div className="form-field">
           <label>Image Generation Style</label>
           <textarea
             rows={2}
@@ -227,15 +240,51 @@ function CatalogModal({ mode, initial, onSave, onClose }: CatalogModalProps) {
               )
             }
           </div>
-          {form.image_base64 && (
+          <div style={{ display: 'flex', gap: '0.5rem', marginTop: '0.5rem', flexWrap: 'wrap' }}>
             <button
-              className="btn-cancel"
-              style={{ marginTop: '0.5rem', fontSize: '0.8rem' }}
-              onClick={() => setForm(p => ({ ...p, image_base64: undefined, image_mime_type: undefined }))}
+              className="btn-generate-thumb"
+              disabled={generating || saving}
+              onClick={async () => {
+                if (!form.title.trim() || !form.source_story.trim()) {
+                  setError('Title and Source Story are required to generate a thumbnail.');
+                  return;
+                }
+                setGenerating(true);
+                setError('');
+                try {
+                  const res = await fetch('/api/catalog/thumbnail', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                      title: form.title,
+                      genre: form.genre,
+                      description: form.description,
+                      source_story: form.source_story,
+                      image_generated_style: form.image_generated_style,
+                    }),
+                  });
+                  if (!res.ok) throw new Error(await res.text());
+                  const { image_base64, image_mime_type } = await res.json();
+                  setForm(p => ({ ...p, image_base64, image_mime_type }));
+                } catch (err: unknown) {
+                  setError(err instanceof Error ? err.message : 'Thumbnail generation failed.');
+                } finally {
+                  setGenerating(false);
+                }
+              }}
             >
-              Remove image
+              {generating ? 'Generating…' : '✨ Generate Thumbnail'}
             </button>
-          )}
+            {form.image_base64 && (
+              <button
+                className="btn-cancel"
+                style={{ fontSize: '0.8rem' }}
+                onClick={() => setForm(p => ({ ...p, image_base64: undefined, image_mime_type: undefined }))}
+              >
+                Remove image
+              </button>
+            )}
+          </div>
         </div>
 
         {error && <div className="error-banner">{error}</div>}
@@ -278,15 +327,17 @@ const NARRATION_LANGUAGES: { code: string; label: string }[] = [
 
 const NARRATION_VOICES = ['Aoede', 'Charon', 'Fenrir', 'Kore', 'Leda', 'Orus', 'Puck', 'Zephyr'];
 
-async function ttsSpeak(text: string, voice: string): Promise<void> {
+async function ttsFetch(text: string, voice: string): Promise<string> {
   const form = new FormData();
   form.append('text', text);
   form.append('voice', voice);
   const res = await fetch('/api/narrate/tts', { method: 'POST', body: form });
   if (!res.ok) throw new Error('TTS request failed');
-  // Use Blob URL + HTMLAudioElement — avoids AudioContext suspended-state issues in Chrome
   const blob = await res.blob();
-  const url = URL.createObjectURL(blob);
+  return URL.createObjectURL(blob);
+}
+
+function ttsPlay(url: string): Promise<void> {
   return new Promise<void>((resolve, reject) => {
     const audio = new Audio(url);
     audio.onended = () => { URL.revokeObjectURL(url); resolve(); };
@@ -325,6 +376,7 @@ function useNarration(
   const activeRef = useRef(false);
   const recorderRef = useRef<MediaRecorder | null>(null);
   const lastNarratedRef = useRef<number>(-1);
+  const pendingAudioRef = useRef<Promise<string | null> | null>(null);
   const onChoiceRef = useRef(onChoice);
   onChoiceRef.current = onChoice;
   const voiceRef = useRef(voice);
@@ -336,6 +388,9 @@ function useNarration(
     activeRef.current = false;
     recorderRef.current?.stop();
     recorderRef.current = null;
+    // Revoke any pre-fetched audio URL that was never played
+    pendingAudioRef.current?.then(url => { if (url) URL.revokeObjectURL(url); });
+    pendingAudioRef.current = null;
     setActive(false);
     setPhase('idle');
     setCountdown(0);
@@ -402,9 +457,7 @@ function useNarration(
     }
   }, []);
 
-  const narrateChapter = useCallback(async (chapter: ChapterResponse) => {
-    if (!activeRef.current) return;
-
+  const buildNarrationText = (chapter: ChapterResponse) => {
     const parts: string[] = [];
     if (chapter.scene) parts.push(chapter.scene);
     if (chapter.epitaph) parts.push(chapter.epitaph);
@@ -415,10 +468,21 @@ function useNarration(
         '. Please say A, B, C, or D.'
       );
     }
+    return parts.join(' ');
+  };
+
+  const narrateChapter = useCallback(async (chapter: ChapterResponse) => {
+    if (!activeRef.current) return;
 
     setPhase('speaking');
     try {
-      await ttsSpeak(parts.join(' '), voiceRef.current);
+      // Use the pre-fetched URL if available; otherwise fetch now
+      const urlPromise = pendingAudioRef.current ?? ttsFetch(buildNarrationText(chapter), voiceRef.current).catch(() => null);
+      pendingAudioRef.current = null;
+      const url = await urlPromise;
+      if (!url) throw new Error('No audio');
+      if (!activeRef.current) { URL.revokeObjectURL(url); return; }
+      await ttsPlay(url);
     } catch {
       if (activeRef.current) setPhase('idle');
       return;
@@ -433,7 +497,18 @@ function useNarration(
     }
   }, [listenForChoice]);
 
-  // Trigger narration whenever a new chapter lands while active
+  // Start fetching TTS audio as soon as a new chapter arrives — even while loading is still true
+  useEffect(() => {
+    if (!active) return;
+    const chapter = chapters[chapters.length - 1];
+    if (!chapter || chapter.chapter_number === lastNarratedRef.current) return;
+    const text = buildNarrationText(chapter);
+    if (text.trim()) {
+      pendingAudioRef.current = ttsFetch(text, voiceRef.current).catch(() => null);
+    }
+  }, [active, chapters]);
+
+  // Play once loading is done (audio is likely already in flight or ready)
   useEffect(() => {
     if (!active || loading) return;
     const chapter = chapters[chapters.length - 1];
@@ -633,9 +708,9 @@ function App() {
   if (!isStarted) {
     return (
       <main className="app-container">
-        <header className="header">
-          <h1>Story Engine</h1>
-          <p>Choose a classic story or enter your own to begin an interactive adventure.</p>
+        <header className="header catalog-hero">
+          <div className="hero-logo">GODMODE</div>
+          <p className="hero-tagline">Unlimited stories. Choose your destiny.</p>
         </header>
 
         <div className="catalog-header">
@@ -656,6 +731,7 @@ function App() {
                 )
                 : <div className="card-cover-placeholder">📖</div>
               }
+              <div className="card-gradient" />
               <div className="card-body">
                 <h3>{story.title}</h3>
                 <span className="genre-tag">{story.genre}</span>
@@ -781,7 +857,8 @@ function App() {
                     onClick={() => handleChoice(choice.key)}
                     disabled={loading}
                   >
-                    <span className="choice-text">{choice.key}. {choice.text}</span>
+                    <span className="choice-key">{choice.key}</span>
+                    <span className="choice-text">{choice.text}</span>
                   </button>
                 ))}
               </div>

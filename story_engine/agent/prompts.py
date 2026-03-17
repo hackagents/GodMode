@@ -41,6 +41,12 @@ Rules:
 - The epitaph should be 2-3 poetic sentences summing up the protagonist's journey"""
 
 
+def build_system_prompt(text_style: str | None = None) -> str:
+    if not text_style:
+        return SYSTEM_PROMPT
+    return SYSTEM_PROMPT + f"\n\n- Write all prose in the following style: {text_style}"
+
+
 def build_opening_messages(
     source_story: str,
     initial_plot: str | None = None,

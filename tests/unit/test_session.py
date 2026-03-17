@@ -1,14 +1,17 @@
 from __future__ import annotations
 
 import pytest
+
 from story_engine.session import SessionStore
 
 
 @pytest.fixture
-def store(tmp_path):
-    s = SessionStore(db_path=str(tmp_path / "test.db"))
+def store(pg_url, pg_conn):
+    pg_conn.cursor().execute("DROP TABLE IF EXISTS sessions")
+    s = SessionStore(database_url=pg_url)
     s.init_db()
-    return s
+    yield s
+    pg_conn.cursor().execute("DROP TABLE IF EXISTS sessions")
 
 
 def test_create_and_get(store):
@@ -69,19 +72,21 @@ def test_delete_nonexistent_does_not_raise(store):
     store.delete("nonexistent-id")  # should not raise
 
 
-def test_sessions_survive_store_reinit(tmp_path):
-    """Sessions written by one store instance are readable by a new instance on the same DB."""
-    db = str(tmp_path / "test.db")
+def test_sessions_survive_store_reinit(pg_url, pg_conn):
+    """Sessions written by one store instance are readable by a new instance."""
+    pg_conn.cursor().execute("DROP TABLE IF EXISTS sessions")
 
-    store1 = SessionStore(db_path=db)
+    store1 = SessionStore(database_url=pg_url)
     store1.init_db()
     session = store1.create("Hamlet by Shakespeare", catalog_id=2)
     session.chapter_count = 2
     store1.update(session.session_id, session)
 
-    store2 = SessionStore(db_path=db)
+    store2 = SessionStore(database_url=pg_url)
     store2.init_db()
     fetched = store2.get(session.session_id)
     assert fetched is not None
     assert fetched.chapter_count == 2
     assert fetched.catalog_id == 2
+
+    pg_conn.cursor().execute("DROP TABLE IF EXISTS sessions")

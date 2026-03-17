@@ -9,7 +9,7 @@ from story_engine.models import StartStoryRequest
 from story_engine.session import session_store
 from story_engine.catalog import catalog_store
 from story_engine.agent.client import gemini_client
-from story_engine.agent.prompts import SYSTEM_PROMPT, build_opening_messages
+from story_engine.agent.prompts import build_system_prompt, build_opening_messages
 from story_engine.agent.parser import parse_chapter
 from story_engine.agent.image_generator import generate_chapter_image
 from story_engine.prefetch import prefetch_choices
@@ -35,6 +35,7 @@ async def start_story(request: StartStoryRequest):
 
         initial_plot = catalog_entry.initial_plot if request.catalog_id is not None else None
         environment = catalog_entry.environment if request.catalog_id is not None else None
+        text_style = catalog_entry.text_style if request.catalog_id is not None else None
         messages = build_opening_messages(source_story, initial_plot=initial_plot, environment=environment)
         # Convert to genai Content format
         contents = [genai_types.Content(role=m["role"], parts=[genai_types.Part(text=m["content"])]) for m in messages]
@@ -45,7 +46,7 @@ async def start_story(request: StartStoryRequest):
                 model=settings.MODEL_NAME,
                 contents=contents,
                 config=genai_types.GenerateContentConfig(
-                    system_instruction=SYSTEM_PROMPT,
+                    system_instruction=build_system_prompt(text_style),
                     temperature=0.9,
                     max_output_tokens=4096,
                 ),

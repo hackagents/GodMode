@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import json
-import sqlite3
 import uuid
+from contextlib import contextmanager
 from typing import Optional
+
+import psycopg2
+import psycopg2.extras
 
 from story_engine.config import settings
 from story_engine.models import ChapterResponse, SessionState
@@ -21,7 +24,7 @@ def _serialize(state: SessionState) -> dict:
     }
 
 
-def _deserialize(row: sqlite3.Row) -> SessionState:
+def _deserialize(row: psycopg2.extras.RealDictRow) -> SessionState:
     return SessionState(
         session_id=row["session_id"],
         source_story=row["source_story"],
@@ -34,29 +37,42 @@ def _deserialize(row: sqlite3.Row) -> SessionState:
 
 
 class SessionStore:
-    def __init__(self, db_path: str):
-        self._db_path = db_path
+    def __init__(self, database_url: str):
+        self._database_url = database_url
 
-    def _connect(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self._db_path)
-        conn.row_factory = sqlite3.Row
-        return conn
+    def _connect(self) -> psycopg2.extensions.connection:
+        return psycopg2.connect(self._database_url)
+
+    @contextmanager
+    def _cursor(self):
+        conn = self._connect()
+        try:
+            with conn:
+                with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                    yield cur
+        finally:
+            conn.close()
 
     def init_db(self) -> None:
-        with self._connect() as conn:
-            conn.execute("""
-                CREATE TABLE IF NOT EXISTS sessions (
-                    session_id    TEXT PRIMARY KEY,
-                    source_story  TEXT NOT NULL,
-                    catalog_id    INTEGER,
-                    chapter_count INTEGER NOT NULL DEFAULT 0,
-                    status        TEXT NOT NULL DEFAULT 'active',
-                    history       TEXT NOT NULL DEFAULT '[]',
-                    chapters      TEXT NOT NULL DEFAULT '[]',
-                    created_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    updated_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                )
-            """)
+        conn = self._connect()
+        try:
+            with conn:
+                with conn.cursor() as cur:
+                    cur.execute("""
+                        CREATE TABLE IF NOT EXISTS sessions (
+                            session_id    TEXT PRIMARY KEY,
+                            source_story  TEXT NOT NULL,
+                            catalog_id    INTEGER,
+                            chapter_count INTEGER NOT NULL DEFAULT 0,
+                            status        TEXT NOT NULL DEFAULT 'active',
+                            history       TEXT NOT NULL DEFAULT '[]',
+                            chapters      TEXT NOT NULL DEFAULT '[]',
+                            created_at    TIMESTAMPTZ DEFAULT NOW(),
+                            updated_at    TIMESTAMPTZ DEFAULT NOW()
+                        )
+                    """)
+        finally:
+            conn.close()
 
     def create(self, source_story: str, catalog_id: Optional[int] = None) -> SessionState:
         state = SessionState(
@@ -69,41 +85,41 @@ class SessionStore:
             chapters=[],
         )
         row = _serialize(state)
-        with self._connect() as conn:
-            conn.execute(
+        with self._cursor() as cur:
+            cur.execute(
                 """INSERT INTO sessions
                    (session_id, source_story, catalog_id, chapter_count, status, history, chapters)
-                   VALUES (:session_id, :source_story, :catalog_id, :chapter_count, :status, :history, :chapters)""",
+                   VALUES (%(session_id)s, %(source_story)s, %(catalog_id)s,
+                           %(chapter_count)s, %(status)s, %(history)s, %(chapters)s)""",
                 row,
             )
         return state
 
     def get(self, session_id: str) -> Optional[SessionState]:
-        with self._connect() as conn:
-            row = conn.execute(
-                "SELECT * FROM sessions WHERE session_id = ?", (session_id,)
-            ).fetchone()
+        with self._cursor() as cur:
+            cur.execute("SELECT * FROM sessions WHERE session_id = %s", (session_id,))
+            row = cur.fetchone()
         return _deserialize(row) if row else None
 
     def update(self, session_id: str, state: SessionState) -> None:
         row = _serialize(state)
-        with self._connect() as conn:
-            conn.execute(
+        with self._cursor() as cur:
+            cur.execute(
                 """UPDATE sessions
-                   SET source_story  = :source_story,
-                       catalog_id    = :catalog_id,
-                       chapter_count = :chapter_count,
-                       status        = :status,
-                       history       = :history,
-                       chapters      = :chapters,
-                       updated_at    = CURRENT_TIMESTAMP
-                   WHERE session_id = :session_id""",
+                   SET source_story  = %(source_story)s,
+                       catalog_id    = %(catalog_id)s,
+                       chapter_count = %(chapter_count)s,
+                       status        = %(status)s,
+                       history       = %(history)s,
+                       chapters      = %(chapters)s,
+                       updated_at    = NOW()
+                   WHERE session_id = %(session_id)s""",
                 row,
             )
 
     def delete(self, session_id: str) -> None:
-        with self._connect() as conn:
-            conn.execute("DELETE FROM sessions WHERE session_id = ?", (session_id,))
+        with self._cursor() as cur:
+            cur.execute("DELETE FROM sessions WHERE session_id = %s", (session_id,))
 
 
-session_store = SessionStore(db_path=settings.CATALOG_DB_PATH)
+session_store = SessionStore(database_url=settings.DATABASE_URL)
