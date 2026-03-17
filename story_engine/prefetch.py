@@ -1,27 +1,26 @@
 from __future__ import annotations
 
 import asyncio
-import base64
 import logging
 from dataclasses import dataclass
 from typing import Optional
 
 from google.genai import types as genai_types
-from google.genai.types import Modality
 
-from story_engine.agent.client import gemini_client
 from story_engine.agent.image_generator import generate_chapter_image
 from story_engine.agent.parser import parse_chapter
-from story_engine.agent.prompts import SYSTEM_PROMPT, build_continuation_messages
+from story_engine.agent.story_agent import build_story_runner, create_seeded_session
+from story_engine.agent.tts_agent import run_tts
 from story_engine.catalog import catalog_store
 from story_engine.config import settings
 from story_engine.models import ChapterResponse, SessionState
 
 logger = logging.getLogger(__name__)
 
-_TTS_MODEL = "gemini-2.5-flash-preview-tts"
 _TTS_PREFETCH_VOICE = "Kore"
 
+
+# ── TTS prefetch cache ────────────────────────────────────────────────────────
 
 @dataclass
 class TtsCacheEntry:
@@ -50,32 +49,7 @@ class TtsPrefetchCache:
 tts_prefetch_cache = TtsPrefetchCache()
 
 
-async def _prefetch_tts(session_id: str, choice_key: str, text: str) -> None:
-    """Generate TTS for the first paragraph and store it in the cache."""
-    try:
-        response = await asyncio.to_thread(
-            gemini_client.models.generate_content,
-            model=_TTS_MODEL,
-            contents=text,
-            config=genai_types.GenerateContentConfig(
-                response_modalities=[Modality.AUDIO],
-                speech_config=genai_types.SpeechConfig(
-                    voice_config=genai_types.VoiceConfig(
-                        prebuilt_voice_config=genai_types.PrebuiltVoiceConfig(
-                            voice_name=_TTS_PREFETCH_VOICE,
-                        )
-                    )
-                ),
-            ),
-        )
-        part = response.candidates[0].content.parts[0]
-        data = part.inline_data.data
-        raw: bytes = data if isinstance(data, bytes) else base64.b64decode(data)
-        tts_prefetch_cache.store(session_id, choice_key, TtsCacheEntry(voice=_TTS_PREFETCH_VOICE, pcm=raw))
-        logger.debug("TTS prefetch stored for choice %s session %s", choice_key, session_id)
-    except Exception:
-        logger.warning("TTS prefetch failed for choice %s session %s", choice_key, session_id, exc_info=True)
-
+# ── Chapter prefetch cache ────────────────────────────────────────────────────
 
 @dataclass
 class PrefetchResult:
@@ -85,18 +59,15 @@ class PrefetchResult:
 
 class PrefetchCache:
     def __init__(self) -> None:
-        # keyed by (session_id, choice_key)
         self._cache: dict[tuple[str, str], PrefetchResult] = {}
 
     def store(self, session_id: str, choice_key: str, result: PrefetchResult) -> None:
         self._cache[(session_id, choice_key)] = result
 
     def pop(self, session_id: str, choice_key: str) -> Optional[PrefetchResult]:
-        """Retrieve and remove a cached result, or return None on miss."""
         return self._cache.pop((session_id, choice_key), None)
 
     def invalidate(self, session_id: str) -> None:
-        """Discard all prefetch entries for a session (other choices are now stale)."""
         stale = [k for k in self._cache if k[0] == session_id]
         for k in stale:
             del self._cache[k]
@@ -105,16 +76,36 @@ class PrefetchCache:
 prefetch_cache = PrefetchCache()
 
 
+# ── TTS prefetch ──────────────────────────────────────────────────────────────
+
+async def _prefetch_tts(session_id: str, choice_key: str, text: str) -> None:
+    """Generate TTS for the first paragraph via the TTS ADK agent and cache it."""
+    try:
+        pcm = await run_tts(text, _TTS_PREFETCH_VOICE)
+        tts_prefetch_cache.store(
+            session_id, choice_key, TtsCacheEntry(voice=_TTS_PREFETCH_VOICE, pcm=pcm)
+        )
+        logger.debug("TTS prefetch stored for choice %s session %s", choice_key, session_id)
+    except Exception:
+        logger.warning(
+            "TTS prefetch failed for choice %s session %s", choice_key, session_id, exc_info=True
+        )
+
+
+# ── Chapter prefetch ──────────────────────────────────────────────────────────
+
 async def prefetch_choices(session: SessionState) -> None:
-    """Generate all choices for the current chapter in parallel and cache them."""
+    """Generate all choice chapters in parallel via the story ADK agent and cache them."""
     last_chapter = session.chapters[-1]
     if not last_chapter.choices:
         return
 
+    text_style: Optional[str] = None
     image_style: Optional[str] = None
     if session.catalog_id is not None:
         entry = catalog_store.get_story(session.catalog_id)
         if entry:
+            text_style = entry.text_style
             image_style = entry.image_generated_style
 
     async def _generate(choice_key: str, choice_text: str) -> None:
@@ -125,30 +116,27 @@ async def prefetch_choices(session: SessionState) -> None:
                 "Please bring the story to a satisfying conclusion with an EPITAPH instead of CHOICES.]"
             )
 
-        messages = build_continuation_messages(session.history, user_input)
-        contents = [
-            genai_types.Content(role=m["role"], parts=[genai_types.Part(text=m["content"])])
-            for m in messages
-        ]
-
         try:
-            response = await asyncio.to_thread(
-                gemini_client.models.generate_content,
-                model=settings.MODEL_NAME,
-                contents=contents,
-                config=genai_types.GenerateContentConfig(
-                    system_instruction=SYSTEM_PROMPT,
-                    temperature=0.9,
-                    max_output_tokens=4096,
-                ),
+            runner, session_service = build_story_runner(text_style)
+            adk_session = await create_seeded_session(
+                session_service, session.session_id, session.history
             )
-            full_text = response.text or ""
-            chapter = parse_chapter(full_text, chapter_number=session.chapter_count + 1)
+            user_message = genai_types.Content(
+                role="user", parts=[genai_types.Part(text=user_input)]
+            )
 
-            # Fire TTS prefetch for first paragraph as a background task (parallel with image)
-            first_para = (chapter.scene or "").split("\n\n")[0].strip()
-            if first_para:
-                asyncio.create_task(_prefetch_tts(session.session_id, choice_key, first_para))
+            full_text = ""
+            async for event in runner.run_async(
+                user_id=session.session_id,
+                session_id=adk_session.id,
+                new_message=user_message,
+            ):
+                if event.content and event.content.parts:
+                    for part in event.content.parts:
+                        if part.text:
+                            full_text += part.text
+
+            chapter = parse_chapter(full_text, chapter_number=session.chapter_count + 1)
 
             image_result = await asyncio.to_thread(
                 generate_chapter_image,
@@ -160,15 +148,22 @@ async def prefetch_choices(session: SessionState) -> None:
             if image_result:
                 chapter.image_base64, chapter.image_mime_type = image_result
 
+            updated_history = session.history + [
+                {"role": "user", "content": user_input},
+                {"role": "model", "content": full_text},
+            ]
             prefetch_cache.store(
                 session.session_id,
                 choice_key,
-                PrefetchResult(
-                    chapter=chapter,
-                    history=messages + [{"role": "model", "content": full_text}],
-                ),
+                PrefetchResult(chapter=chapter, history=updated_history),
             )
             logger.debug("Prefetched choice %s for session %s", choice_key, session.session_id)
+
+            # TTS prefetch for first paragraph (background — don't block image gen)
+            first_para = (chapter.scene or "").split("\n\n")[0].strip()
+            if first_para:
+                asyncio.create_task(_prefetch_tts(session.session_id, choice_key, first_para))
+
         except Exception:
             logger.warning("Prefetch failed for choice %s", choice_key, exc_info=True)
 
