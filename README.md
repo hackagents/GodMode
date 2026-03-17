@@ -34,7 +34,7 @@ Optional overrides (defaults shown):
 
 ```env
 GCP_LOCATION=global
-MODEL_NAME=gemini-2.0-flash
+MODEL_NAME=gemini-3-flash-preview
 MAX_CHAPTERS=10
 ```
 

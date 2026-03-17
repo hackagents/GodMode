@@ -2,11 +2,11 @@ from __future__ import annotations
 
 import base64
 
-from google.adk.agents import LlmAgent
-from google.adk.runners import Runner
-from google.adk.sessions import InMemorySessionService
+from google import genai
 from google.genai import types as genai_types
 from google.genai.types import Modality
+
+from story_engine.config import settings
 
 _TTS_MODEL = "gemini-2.5-flash-preview-tts"
 _TTS_INSTRUCTION = (
@@ -14,14 +14,18 @@ _TTS_INSTRUCTION = (
     "Do not add any commentary or additional words."
 )
 
+# Dedicated Gemini API client for TTS — bypasses Vertex AI which does not
+# support the TTS preview model on the global endpoint.
+# vertexai=False forces Gemini API even when GOOGLE_GENAI_USE_VERTEXAI=TRUE is set globally
+_tts_client = genai.Client(api_key=settings.GEMINI_API_KEY, vertexai=False)
 
-def build_tts_runner(voice: str) -> tuple[Runner, InMemorySessionService]:
-    """Return a Runner + session service for a single TTS request."""
-    agent = LlmAgent(
-        name="tts_agent",
+
+async def run_tts(text: str, voice: str) -> bytes:
+    """Generate speech for the given text, returning raw PCM bytes."""
+    response = await _tts_client.aio.models.generate_content(
         model=_TTS_MODEL,
-        instruction=_TTS_INSTRUCTION,
-        generate_content_config=genai_types.GenerateContentConfig(
+        contents=text,
+        config=genai_types.GenerateContentConfig(
             response_modalities=[Modality.AUDIO],
             speech_config=genai_types.SpeechConfig(
                 voice_config=genai_types.VoiceConfig(
@@ -32,29 +36,10 @@ def build_tts_runner(voice: str) -> tuple[Runner, InMemorySessionService]:
             ),
         ),
     )
-    session_service = InMemorySessionService()
-    runner = Runner(agent=agent, app_name="story_tts", session_service=session_service)
-    return runner, session_service
 
-
-async def run_tts(text: str, voice: str) -> bytes:
-    """Generate speech for the given text, returning raw PCM bytes."""
-    runner, session_service = build_tts_runner(voice)
-    adk_session = await session_service.create_session(
-        app_name="story_tts",
-        user_id="tts_user",
-    )
-    message = genai_types.Content(role="user", parts=[genai_types.Part(text=text)])
-
-    async for event in runner.run_async(
-        user_id="tts_user",
-        session_id=adk_session.id,
-        new_message=message,
-    ):
-        if event.content and event.content.parts:
-            for part in event.content.parts:
-                if part.inline_data and part.inline_data.data:
-                    data = part.inline_data.data
-                    return data if isinstance(data, bytes) else base64.b64decode(data)
+    for part in response.candidates[0].content.parts:
+        if part.inline_data and part.inline_data.data:
+            data = part.inline_data.data
+            return data if isinstance(data, bytes) else base64.b64decode(data)
 
     raise RuntimeError("TTS agent returned no audio")
