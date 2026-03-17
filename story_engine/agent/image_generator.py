@@ -34,6 +34,41 @@ def _build_image_prompt(
     return f"{visual} — {effective_style}"
 
 
+def generate_catalog_thumbnail(
+    title: str,
+    genre: str,
+    description: str,
+    source_story: str,
+    style: Optional[str] = None,
+) -> tuple[str, str] | None:
+    """Generate a poster-style thumbnail for a catalog story.
+
+    Returns (base64_string, mime_type) or None if generation fails.
+    """
+    effective_style = style or _STYLE
+    prompt = (
+        f"A dramatic cinematic poster thumbnail for '{title}', a {genre} story. "
+        f"{description} Inspired by: {source_story}. "
+        f"Style: {effective_style}. "
+        f"No text, no letters, no words in the image."
+    )
+    try:
+        response = gemini_client.models.generate_images(
+            model=settings.IMAGEN_MODEL,
+            prompt=prompt,
+            config=genai_types.GenerateImagesConfig(
+                number_of_images=1,
+                aspect_ratio="16:9",
+            ),
+        )
+        image = response.generated_images[0].image
+        b64 = base64.b64encode(image.image_bytes).decode("utf-8")
+        return b64, "image/png"
+    except Exception:
+        logger.warning("Catalog thumbnail generation failed for '%s'", title, exc_info=True)
+        return None
+
+
 def generate_chapter_image(
     scene: Optional[str],
     reveal: Optional[str],
